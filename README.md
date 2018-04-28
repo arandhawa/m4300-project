@@ -36,3 +36,22 @@ Usage: ./getstock [-h|--help] [-k FILE] [-b DATE]
 Notes:
     Only the API key and the stock symbols are required arguments
 ```
+
+## Examples
+
+Given your apikey is in a file named 'apikey' in the current directory...
+
+```
+$ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -- F
+```
+
+Will grab all data for Ford Motor Co. between Jan 2018 and April 2018, and
+print it to stdout.
+
+To save data for Ford and Bank of America two files in the current directory:
+```
+$ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -o . -- F BAC
+```
+
+On Unix systems ```.``` is a synonym for the current directory
+
