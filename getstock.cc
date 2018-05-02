@@ -36,6 +36,8 @@ static std::string make_url(std::string const & ticker,
                             char const *end);
 static std::string make_filename(std::string const & dbroot, std::string const & ticker,
                                  char const *begin, char const *end);
+static int has_data(std::string const & dbroot, std::string const & ticker,
+                   char const *begin, char const *end);
 static void writef(std::string const & buffer, FILE *file);
 static size_t curl_callback(void *buf, size_t size, size_t nmemb, void *cbuf); /* CURL callback writer */
 static void die(char const *fmt, ...);               /* print a message and kill the program */
@@ -148,6 +150,32 @@ std::string make_filename(std::string const & dbroot, std::string const & ticker
 	}
 	fname << ".csv";
 	return fname.str();
+}
+int has_data(std::string const & dbroot, std::string const & ticker,
+             char const *begin, char const *end)
+{
+	struct stat buf;
+	std::string _filename;
+	char const *filename;
+
+	_filename = make_filename(dbroot, ticker, begin, end);
+	filename = _filename.c_str();
+
+	memset(&buf, 0, sizeof buf);
+	if (stat(filename.c_str(), &buf) == -1)
+		return 0;
+	/*
+	size_t begin_date = filename.find('.');
+	if (begin_date == std::string::npos ||
+		(filename.compare(begin_date, filename.size()-begin_date, ".csv")) == 0)
+		//TODO: read from file parse dates, has_data
+	*/
+	char *period;
+	for (period = filename; *period && 
+	else {
+
+	}
+
 }
 /* write all content of 'buffer' to file */
 void writef(std::string const & buffer, FILE *file)
@@ -285,6 +313,9 @@ int main(int argc, char **argv)
 	curl = curl_easy_init();
 	for ( ; ac && *av; ac--, av++) {
 		auto ticker = upper(*av);
+		if (!dbroot.empty())
+			if (has_data(dbroot, ticker, begin.c_str(), end.c_str()))
+				continue;
 		auto url = make_url(ticker, api_key, begin.c_str(), end.c_str());
 		char const *urlc = url.c_str();
 
