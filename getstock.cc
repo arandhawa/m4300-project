@@ -23,6 +23,8 @@
 
 #include <curl/curl.h>
 
+#define DATE_FMT "%Y-%m-%d"
+
 static int database_init(char const *path);          /* initializes the database if it does not exist */
 static std::string slurp(std::string filename);       /* read entire file into a string */
 static void strip(std::string *s);                    /* remove whitespace, newlines from '*s' */
@@ -36,7 +38,7 @@ static std::string make_url(std::string const & ticker,
                             char const *end);
 static std::string make_filename(std::string const & dbroot, std::string const & ticker,
                                  char const *begin, char const *end);
-static int has_data(std::string const & dbroot, std::string const & ticker,
+static int has_data(std::string const & filename,
                    char const *begin, char const *end);
 static void writef(std::string const & buffer, FILE *file);
 static size_t curl_callback(void *buf, size_t size, size_t nmemb, void *cbuf); /* CURL callback writer */
@@ -151,31 +153,111 @@ std::string make_filename(std::string const & dbroot, std::string const & ticker
 	fname << ".csv";
 	return fname.str();
 }
-int has_data(std::string const & dbroot, std::string const & ticker,
-             char const *begin, char const *end)
+std::vector<std::string> get_db_files(std::string const & dbroot)
+{
+	char command[256];
+	char buf[512];
+	FILE *ls;
+	std::vector<std::string> files;
+
+	sprintf(command, "ls %s/*.csv", dbroot.c_str());
+	ls = popen(command, "r");
+	while (fgets(buf, sizeof buf, ls)) {
+		files.emplace_back(buf);
+	}
+	pclose(ls);
+	return files;
+}
+std::string find_file_by_ticker(std::string const & dbroot,
+                                std::string const & ticker,
+                                std::vector<std::string> const *files) /* files is optional argument */
+{
+	std::vector<std::string> m_files;
+	if (!files) {
+		m_files = get_db_files(dbroot);
+		files = &m_files;
+	}
+	char const *t = ticker.c_str();
+	for (auto const & file : *files) {
+		char const *fstr = file.c_str();
+		if (strcasestr(fstr, t) != NULL) {
+			std::string retval = fstr;
+			strip(&retval);
+			return retval;
+		}
+	}
+	return {};
+}
+int has_data(std::string const & _filename, char const *a_begin, char const *a_end)
 {
 	struct stat buf;
-	std::string _filename;
 	char const *filename;
-
-	_filename = make_filename(dbroot, ticker, begin, end);
-	filename = _filename.c_str();
+	char const *begin_date, *end_date;
+	struct tm begin_tm, end_tm;
+	time_t begin, end, argbegin, argend;
 
 	memset(&buf, 0, sizeof buf);
-	if (stat(filename.c_str(), &buf) == -1)
+	memset(&begin_tm, 0, sizeof begin_tm);
+	memset(&end_tm, 0, sizeof end_tm);
+
+	filename = _filename.c_str();
+	if (stat(filename, &buf) == -1)
 		return 0;
-	/*
-	size_t begin_date = filename.find('.');
-	if (begin_date == std::string::npos ||
-		(filename.compare(begin_date, filename.size()-begin_date, ".csv")) == 0)
-		//TODO: read from file parse dates, has_data
-	*/
-	char *period;
-	for (period = filename; *period && 
-	else {
+	char const *last_slash = strrchr(filename, '/');
+	if (last_slash != NULL)
+		filename = last_slash + 1;
+#ifdef DEBUG
+	printf("Trace 1\n");
+#endif
 
+	begin_date = strchr(filename, '.');
+	if (begin_date == NULL)
+		return 0;
+#ifdef DEBUG
+	printf("Trace 2\n");
+#endif
+	if (strcmp(begin_date, ".csv") == 0) /* there are no dates in filename */
+		return 0;
+#ifdef DEBUG
+	printf("Trace 3\n");
+#endif
+	begin_date++;
+	end_date = strptime(begin_date, DATE_FMT, &begin_tm);
+	if (end_date == NULL || *end_date == '\0') {
+		/* and error occurred, or there is no ending date after the beginning date */
+		return 0;
 	}
-
+#ifdef DEBUG
+	printf("Trace 4\n");
+#endif
+	if (*end_date != '.')
+		return 0;
+#ifdef DEBUG
+	printf("Trace 5\n");
+#endif
+	end_date++;
+	if (strptime(end_date, DATE_FMT, &end_tm) == NULL)
+		return 0;
+#ifdef DEBUG
+	printf("Trace 6\n");
+#endif
+	
+	/* convert broken-down time (struct tm) to an integral type (time_t) */
+	begin = mktime(&begin_tm);
+	end   = mktime(&end_tm);
+	
+	/* parse user strings, and compare */
+	memset(&begin_tm, 0, sizeof begin_tm);
+	memset(&end_tm,   0, sizeof end_tm);
+	if (strptime(a_begin, DATE_FMT, &begin_tm) == NULL)
+		return 0;
+	if (strptime(a_end,   DATE_FMT, &end_tm) == NULL)
+		return 0;
+	argbegin = mktime(&begin_tm);
+	argend   = mktime(&end_tm);
+	if (begin <= argbegin && end >= argend)
+		return 1;
+	return 0;
 }
 /* write all content of 'buffer' to file */
 void writef(std::string const & buffer, FILE *file)
@@ -235,6 +317,35 @@ void usage(char const *argv0)
 	,argv0);
 	exit(1);
 }
+/*
+void test()
+{
+	char const *begin = "2018-05-01";
+	char const *end   = "2018-02-01";
+	char const *tickers[] = {
+		"Bar", "Baz", "Foo",
+	};
+	char const *dbroot = ".";
+	auto dbfiles = get_db_files(dbroot);
+	for (char const *ticker : tickers) {
+		auto path = find_file_by_ticker(dbroot, ticker, &dbfiles);
+		if (path.empty()) {
+			continue;
+		} else {
+			int s = has_data(path, begin, end);
+			if (s) {
+				printf("%s has data between %s and %s\n", path.c_str(), begin, end);
+			} else {
+				printf("%s does not have data between %s and %s\n", path.c_str(), begin, end);
+			}
+		}
+	}
+}
+int main()
+{
+	test();
+}
+*/
 int main(int argc, char **argv)
 {
 	char const *argv0 = argv[0];
@@ -249,6 +360,7 @@ int main(int argc, char **argv)
 	std::string begin;         /* beginning and ending dates */
 	std::string end;
 	std::string dbroot;        /* root directory of the database passed by the user via [-o] option */
+	std::vector<std::string> dbfiles;     /* all .csv files found in dbroot */
 	int ac;
 	char **av;
 	std::string buffer;        /* memory buffer containing the stock data */
@@ -308,14 +420,17 @@ int main(int argc, char **argv)
 		if (dbroot.size() > 1)
 			while (dbroot.size() > 1 && dbroot.back() == '/')
 				dbroot.pop_back();
+		dbfiles = get_db_files(dbroot);
 	}
 
 	curl = curl_easy_init();
 	for ( ; ac && *av; ac--, av++) {
 		auto ticker = upper(*av);
-		if (!dbroot.empty())
-			if (has_data(dbroot, ticker, begin.c_str(), end.c_str()))
+		if (!dbfiles.empty()) {
+			auto fpath = find_file_by_ticker(dbroot, ticker, &dbfiles);
+			if (has_data(fpath, begin.c_str(), end.c_str()))
 				continue;
+		}
 		auto url = make_url(ticker, api_key, begin.c_str(), end.c_str());
 		char const *urlc = url.c_str();
 
