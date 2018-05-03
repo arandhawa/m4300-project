@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>    /* strncasecmp */
 
 #include <algorithm>    /* std::rotate, std::find_if */
 #include <fstream>
@@ -23,7 +24,14 @@
 
 #include <curl/curl.h>
 
+/* DATE_FMT is the date format used for file naming
+ * DDATE_FMT is the format used for the date labels in the actual file content
+ * TODO: inspect quandl data and make sure DDATE_FMT is correct
+ */
 #define DATE_FMT "%Y-%m-%d"
+#define DDATE_FMT "%Y-%m-%d"
+#define DATE_KEY "Date"
+#define DATA_SEP ','
 
 static int database_init(char const *path);          /* initializes the database if it does not exist */
 static std::string slurp(std::string filename);       /* read entire file into a string */
@@ -42,6 +50,7 @@ static int has_data(std::string const & filename,
                    char const *begin, char const *end);
 static void writef(std::string const & buffer, FILE *file);
 static size_t curl_callback(void *buf, size_t size, size_t nmemb, void *cbuf); /* CURL callback writer */
+static int read_until(FILE *file, time_t begin);     /* read from data source until we hit a certain point in time (begin) */
 static void die(char const *fmt, ...);               /* print a message and kill the program */
 static void usage(char const * argv0);
 
@@ -289,6 +298,74 @@ size_t curl_callback(void *buf, size_t size, size_t nmemb, void *cbuf)
 {
 	((std::string *)cbuf)->append((char*)buf, size * nmemb);
 	return size * nmemb;
+}
+/*
+ * read_until
+ *   @file  := FILE stream
+ *   @begin := the date we want to synchronize with
+ * returns:
+ *   0 if everything is OK
+ *   1 if there is no data with date label == begin in the file
+ */
+int read_until(FILE *file, time_t begin)
+{
+	char buf[256];
+	char *date, *end, *lineEnd;
+	int date_index;
+	int nread;
+	struct tm tm;
+	time_t tmp;
+
+	if (!fgets(buf, sizeof buf, file))
+		die("File is empty\n");
+	date = buf;
+	lineEnd = buf + strlen(buf);
+	end = strchr(date, DATA_SEP);
+	if (end == NULL)
+		die("Could not find date in file header\n");
+	date_index = 0;
+	while (date < lineEnd) {
+		int size = end - date;
+		if (strncasecmp(date, "date", size) == 0) {
+			break;
+		}
+		date = end + 1;
+		end = strchrnul(date, DATA_SEP);
+		date_index++;
+	}
+	int nsep = 0;
+	for (char *tmp = buf; *tmp != '\0'; tmp++)
+		if (*tmp == DATA_SEP)
+			nsep++;
+	if (date_index > nsep)
+		die("Date field not found in data\n");
+	while (fgets(buf, sizeof buf, file)) {
+		nread = strlen(buf);
+		date = buf;
+		for (int i = 0; i < date_index; i++) {
+			date = strchr(date, DATA_SEP);
+			if (!date) {
+				die("Date field not found in data\n");
+			}
+			date++;
+		}
+		memset(&tm, 0, sizeof tm);
+		if (!strptime(date, DDATE_FMT, &tm)) {
+			die("Failed to parse date in file\n");
+		}
+		tmp = mktime(&tm);
+		if (tmp < begin)
+			continue;
+		else if (tmp == begin)
+			goto REWIND;
+		else
+			goto QUIT;
+	}
+REWIND:
+	fseek(file, SEEK_CUR, -nread);
+	return 0;
+QUIT:
+	return 1;
 }
 void die(char const *fmt, ...)
 {
