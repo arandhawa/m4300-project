@@ -12,6 +12,7 @@
 #define DATE_KEY "Date"
 #define DATA_SEP ','
 
+#define DEFAULT_INITIAL_CAPITAL 100000.0
 #define DEFAULT_VARIANCE 0.10
 #define DEFAULT_MEAN_RETURN 0.05
 #define DEFAULT_TCOST_MODEL TCostPerTrade
@@ -26,10 +27,19 @@ enum TCostModel {
 	TCostPerTrade,
 	TCostPerShare,
 };
+static const char *tcost_names[] = {
+	NULL,
+	"Per Trade",
+	"Per Share",
+};
 enum EModels {
 	ModelNULL,
 	MeanVar,
 	/* more models go here ...*/
+};
+static const char *model_names[] = {
+	NULL,
+	"Mean-Variance",
 };
 static std::string upper(char const *s);
 static std::string ticker_from_filename(char const *filename);
@@ -290,6 +300,7 @@ void usage(char const *argv0)
 	"\n"
 	"Default values\n"
 	"    If the command options are not specified, the following defaults will be assumed:\n"
+	"        Initial capital = %.1f\n"
 	"        Variance = %.2f\n"
 	"        Mean return = %.2f\n"
 	"        Transaction cost model = %s\n"
@@ -305,6 +316,7 @@ void usage(char const *argv0)
 	"Example usage (using the getstock program to get the data)\n"
 	"    $ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -o data -- JPM BAC GS | %s -c 100000 -t pt 10.0 -m meanvar -v 0.04 -r 0.07\n"
 	,argv0
+	,DEFAULT_INITIAL_CAPITAL
 	,DEFAULT_VARIANCE
 	,DEFAULT_MEAN_RETURN
 	,DEFAULT_TCOST_MODEL_NAME
@@ -414,19 +426,37 @@ int main(int argc, char **argv)
 	if (models.empty()) {
 		warn("No models specified, using default of Markowitz Mean-variance\n");
 		models.push_back(MeanVar);
+	} else {
+		printf("The models selected are:\n");
+		for (auto m : models) {
+			printf("%s\n", model_names[m]);
+		}
+	}
+	if (initial_capital == 0.0) {
+		warn("Setting initial capital to default: %.1f\n", DEFAULT_INITIAL_CAPITAL);
+		initial_capital = DEFAULT_INITIAL_CAPITAL;
+	} else {
+		printf("initial capital = %.1f\n", initial_capital);
 	}
 	if (tcm == TCostNULL) {
 		warn("No transaction cost model specified, using default of %.2f per trade\n", DEFAULT_TCOST);
 		tcm = TCostPerTrade;
 		tcost = DEFAULT_TCOST;
+	} else {
+		printf("Transaction cost model: %s\n", tcost_names[tcm]);
+		printf("Transaction cost: %.4f\n", tcost);
 	}
 	if (variance == 0.0) {
 		warn("Variance not specified. Using default value %.4f\n", DEFAULT_VARIANCE);
 		variance = DEFAULT_VARIANCE;
+	} else {
+		printf("Variance = %.4f\n", variance);
 	}
 	if (mean_return == 0.0) {
 		warn("Mean return not specified. Using default value %.4f\n", DEFAULT_MEAN_RETURN);
 		mean_return = DEFAULT_MEAN_RETURN;
+	} else {
+		printf("Mean Return = %.4f\n", mean_return);
 	}
 
 	std::string begin_date;
