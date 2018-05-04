@@ -28,25 +28,16 @@ enum EModels {
 	/* more models go here ...*/
 };
 
-static time_t parse_date(char const *s);
-static std::vector<std::vector<double> > read_stock_data(std::vector<std::string> const & filepaths);
+static std::vector<std::vector<double> > read_stock_data(std::vector<std::string> const & filepaths, time_t start);
 static time_t strtotime(char const *s);               /* convert date time string to an integral representation (time_t) */
-static time_t read_until(FILE *file, time_t begin);     /* read from data source until we hit a certain point in time (begin) */
+static time_t read_until(FILE *file, time_t begin, int date_index);     /* read from data source until we hit a certain point in time (begin) */
 static int indexOf(char const *line, char const *field);
 static void die(char const *fmt, ...);               /* print a message and kill the program */
 static void warn(char const *fmt, ...);              /* print a message */
 static void usage(char const * argv0);
 
-time_t parse_date(char const *s)
-{
-	struct tm tm;
-	memset(&tm, 0, sizeof tm);
-	if (!strptime(s, DATE_FMT, &tm))
-		return 0;
-	return mktime(&tm);
-}
 std::vector<std::vector<double> >
-read_stock_data(std::vector<std::string> const & filepaths)
+read_stock_data(std::vector<std::string> const & filepaths, time_t start)
 {
 	std::vector<std::vector<double> > data;
 	std::vector<double> prices;
@@ -61,6 +52,8 @@ read_stock_data(std::vector<std::string> const & filepaths)
 		}
 		fgets(buf, sizeof buf, file);
 		int close_index = indexOf(buf, "Adj. Close");
+		int date_index = indexOf(buf, "date");
+		read_until(file, start, date_index);
 		while (fgets(buf, sizeof buf, file)) {
 			p = buf;
 			for (int i = 0; i < close_index; i++) {
@@ -95,19 +88,13 @@ time_t strtotime(char const *s)
  *   the earliest time observation that is >= begin, in Unix time.
  *   or 0 (1970-01-01 00:00:00) if there is no date >= begin
  */
-time_t read_until(FILE *file, time_t begin)
+time_t read_until(FILE *file, time_t begin, int date_index)
 {
 	char buf[256];
 	char *date;
-	int date_index;
 	int nread;
 	struct tm tm;
 	time_t tmp;
-
-	/* find 'date' field in the header */
-	if (!fgets(buf, sizeof buf, file))
-		die("File is empty\n");
-	date_index = indexOf(buf, "date");
 
 	/* iterate over dates in file until date >= begin */
 	while (fgets(buf, sizeof buf, file)) {
@@ -168,8 +155,9 @@ int indexOf(char const *line, char const *field)
 		if (*tmp == DATA_SEP)
 			nsep++;
 	}
-	if (index > nsep)
-		die("Field not found in data\n");
+	if (index > nsep) {
+		die("Field not found in data: %s\n", field);
+	}
 	return index;
 }
 void die(char const *fmt, ...)
@@ -373,8 +361,8 @@ int main(int argc, char **argv)
 
 	std::cin >> begin_date;
 	std::cin >> end_date;
-	begin = parse_date(begin_date.c_str());
-	end = parse_date(end_date.c_str());
+	begin = strtotime(begin_date.c_str());
+	end = strtotime(end_date.c_str());
 	if (begin == 0) {
 		die("Error parsing date: %s\n", begin_date.c_str());
 	}
@@ -386,6 +374,6 @@ int main(int argc, char **argv)
 	while (std::cin >> tmp) {
 		files.emplace_back(tmp);
 	}
-	auto data = read_stock_data(files);
+	auto data = read_stock_data(files, begin);
 	return 0;
 }
