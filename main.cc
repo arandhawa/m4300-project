@@ -453,6 +453,12 @@ int main(int argc, char **argv)
 	for (auto & d : data) {
 		auto ticker = d.first;
 		auto & prices = d.second;
+		/* DO STUFF WITH STOCK PRICES HERE */
 	}
+	/*
+	 *
+	 * PORTFOLIO OPTIMIZATION CODE GOES HERE
+	 *
+	 */
 	return 0;
 }
