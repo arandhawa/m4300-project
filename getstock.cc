@@ -35,10 +35,12 @@
 
 static int database_init(char const *path);          /* initializes the database if it does not exist */
 static std::string slurp(std::string filename);       /* read entire file into a string */
+static void strip(char *s);
+static void lstrip(char *s);
+static void rstrip(char *s);
 static void strip(std::string *s);                    /* remove whitespace, newlines from '*s' */
 static void lstrip(std::string *s);
 static void rstrip(std::string *s);
-static std::string upper(std::string const & s);      /* upper case a string */
 static std::string upper(char const * s);
 static std::string make_url(std::string const & ticker,
                             std::string const & token,
@@ -46,11 +48,13 @@ static std::string make_url(std::string const & ticker,
                             char const *end);
 static std::string make_filename(std::string const & dbroot, std::string const & ticker,
                                  char const *begin, char const *end);
+std::vector<std::string> get_db_files(std::string const & dbroot);
+std::vector<std::string>::iterator
+find_file_by_ticker(std::string const & ticker,
+                    std::vector<std::string> const & files);
 static int has_data(std::string const & filename,
                    char const *begin, char const *end);
-static void writef(std::string const & buffer, FILE *file);
-static size_t curl_callback(void *buf, size_t size, size_t nmemb, void *cbuf); /* CURL callback writer */
-static int read_until(FILE *file, time_t begin);     /* read from data source until we hit a certain point in time (begin) */
+static size_t curl_callback_fwrite(void *buf, size_t size, size_t nmemb, void *file); /* CURL callback writer */
 static void die(char const *fmt, ...);               /* print a message and kill the program */
 static void usage(char const * argv0);
 
@@ -104,14 +108,29 @@ void rstrip(std::string *s) /* right-hand side strip */
  * https://www.cs.northwestern.edu/~riesbeck/programming/c++/stl-iterators.html
  * http://en.cppreference.com/w/cpp/iterator/reverse_iterator
  */
-std::string upper(std::string const & s)
+void strip(char *s)
 {
-	std::string ret;
-	ret.resize(s.size());
-	for (int i = 0; i < (int) s.size(); i++) {
-		ret[i] = toupper(s[i]);   /* toupper declared in ctype.h */
+	lstrip(s);
+	rstrip(s);
+}
+void lstrip(char *s)
+{
+	char *begin;
+	for (begin = s; *begin != '\0' && isspace(*begin); begin++)
+		;
+	if (*begin != '\0') {
+		memmove(s, begin, strlen(begin) + 1);
+	} else {
+		*s = '\0';
 	}
-	return ret;
+}
+void rstrip(char *s)
+{
+	char *end;
+	for (end = s + strlen(s) - 1; end >= s && isspace(*end); end--)
+		;
+	end++;
+	*end = '\0';
 }
 std::string upper(char const *s)
 {
@@ -172,30 +191,26 @@ std::vector<std::string> get_db_files(std::string const & dbroot)
 	sprintf(command, "ls %s/*.csv", dbroot.c_str());
 	ls = popen(command, "r");
 	while (fgets(buf, sizeof buf, ls)) {
+		strip(buf);
 		files.emplace_back(buf);
 	}
 	pclose(ls);
 	return files;
 }
-std::string find_file_by_ticker(std::string const & dbroot,
-                                std::string const & ticker,
-                                std::vector<std::string> const *files) /* files is optional argument */
+std::vector<std::string>::iterator
+find_file_by_ticker(std::string const & ticker,
+                    std::vector<std::string> & files)
+
 {
-	std::vector<std::string> m_files;
-	if (!files) {
-		m_files = get_db_files(dbroot);
-		files = &m_files;
-	}
 	char const *t = ticker.c_str();
-	for (auto const & file : *files) {
-		char const *fstr = file.c_str();
+	auto it = files.begin();
+	for ( ; it != files.end(); it++) {
+		char const *fstr = it->c_str();
 		if (strcasestr(fstr, t) != NULL) {
-			std::string retval = fstr;
-			strip(&retval);
-			return retval;
+			return it;
 		}
 	}
-	return {};
+	return it;
 }
 int has_data(std::string const & _filename, char const *a_begin, char const *a_end)
 {
@@ -215,47 +230,28 @@ int has_data(std::string const & _filename, char const *a_begin, char const *a_e
 	char const *last_slash = strrchr(filename, '/');
 	if (last_slash != NULL)
 		filename = last_slash + 1;
-#ifdef DEBUG
-	printf("Trace 1\n");
-#endif
 
 	begin_date = strchr(filename, '.');
 	if (begin_date == NULL)
 		return 0;
-#ifdef DEBUG
-	printf("Trace 2\n");
-#endif
 	if (strcmp(begin_date, ".csv") == 0) /* there are no dates in filename */
 		return 0;
-#ifdef DEBUG
-	printf("Trace 3\n");
-#endif
 	begin_date++;
+
 	end_date = strptime(begin_date, DATE_FMT, &begin_tm);
 	if (end_date == NULL || *end_date == '\0') {
 		/* and error occurred, or there is no ending date after the beginning date */
 		return 0;
 	}
-#ifdef DEBUG
-	printf("Trace 4\n");
-#endif
 	if (*end_date != '.')
 		return 0;
-#ifdef DEBUG
-	printf("Trace 5\n");
-#endif
 	end_date++;
 	if (strptime(end_date, DATE_FMT, &end_tm) == NULL)
 		return 0;
-#ifdef DEBUG
-	printf("Trace 6\n");
-#endif
-	
-	/* convert broken-down time (struct tm) to an integral type (time_t) */
+
+	/* convert broken-down time (struct tm) to an integral type (time_t), parse user strings, and compare */
 	begin = mktime(&begin_tm);
 	end   = mktime(&end_tm);
-	
-	/* parse user strings, and compare */
 	memset(&begin_tm, 0, sizeof begin_tm);
 	memset(&end_tm,   0, sizeof end_tm);
 	if (strptime(a_begin, DATE_FMT, &begin_tm) == NULL)
@@ -268,104 +264,13 @@ int has_data(std::string const & _filename, char const *a_begin, char const *a_e
 		return 1;
 	return 0;
 }
-/* write all content of 'buffer' to file */
-void writef(std::string const & buffer, FILE *file)
-{
-	char const *buf;
-	int bufsize;
-
-	buf = buffer.c_str();
-	bufsize = buffer.size();
-	fwrite(buf, bufsize, 1, file);
-}
-/* when CURL reads data from a URL, it puts it in its own memory buffer.
- * we copy that data from CURL's internal buffers to OUR buffer with this
- * 'callback' function.
- * We provide this function to the CURL library and whenever it has data to give
- * is it will call this function. Hence the name 'callback'.
- *
- * parameters:
- * 	@buf:   CURL's buffer
- * 	@size:  the size of one element in the buffer
- * 	@nmemb: the number of elements in the buffer
- * 	        (so size * nmemb is the total size of the memory pointed to by buf)
- * 	@cbuf:  'client buffer' this is a pointer to our object (which is of type std::string)
- *
- * we have to cast (void *cbuf) back to (std::string *) so that the compiler knows what type
- * it is and then we can call std::string::append
- */
-size_t curl_callback(void *buf, size_t size, size_t nmemb, void *cbuf)
-{
-	((std::string *)cbuf)->append((char*)buf, size * nmemb);
-	return size * nmemb;
-}
 /*
- * read_until
- *   @file  := FILE stream
- *   @begin := the date we want to synchronize with
- * returns:
- *   0 if everything is OK
- *   1 if there is no data with date label == begin in the file
+ * Curl Callback to write directly to a file.
  */
-int read_until(FILE *file, time_t begin)
+size_t curl_callback_fwrite(void *buf, size_t size, size_t nmemb, void *file)
 {
-	char buf[256];
-	char *date, *end, *lineEnd;
-	int date_index;
-	int nread;
-	struct tm tm;
-	time_t tmp;
-
-	if (!fgets(buf, sizeof buf, file))
-		die("File is empty\n");
-	date = buf;
-	lineEnd = buf + strlen(buf);
-	end = strchr(date, DATA_SEP);
-	if (end == NULL)
-		die("Could not find date in file header\n");
-	date_index = 0;
-	while (date < lineEnd) {
-		int size = end - date;
-		if (strncasecmp(date, "date", size) == 0) {
-			break;
-		}
-		date = end + 1;
-		end = strchrnul(date, DATA_SEP);
-		date_index++;
-	}
-	int nsep = 0;
-	for (char *tmp = buf; *tmp != '\0'; tmp++)
-		if (*tmp == DATA_SEP)
-			nsep++;
-	if (date_index > nsep)
-		die("Date field not found in data\n");
-	while (fgets(buf, sizeof buf, file)) {
-		nread = strlen(buf);
-		date = buf;
-		for (int i = 0; i < date_index; i++) {
-			date = strchr(date, DATA_SEP);
-			if (!date) {
-				die("Date field not found in data\n");
-			}
-			date++;
-		}
-		memset(&tm, 0, sizeof tm);
-		if (!strptime(date, DDATE_FMT, &tm)) {
-			die("Failed to parse date in file\n");
-		}
-		tmp = mktime(&tm);
-		if (tmp < begin)
-			continue;
-		else if (tmp == begin)
-			goto REWIND;
-		else
-			goto QUIT;
-	}
-REWIND:
-	fseek(file, SEEK_CUR, -nread);
-	return 0;
-QUIT:
-	return 1;
+	fwrite(buf, size, nmemb, (FILE *)file);
+	return size * nmemb;
 }
 void die(char const *fmt, ...)
 {
@@ -487,60 +392,52 @@ int main(int argc, char **argv)
 	strip(&api_key);
 	if (api_key.empty())      die("Failed to read api key from file: %s\n", api_key_file.c_str());
 
-	if (!dbroot.empty()) {
-		int status = database_init(dbroot.c_str());
-		if (status == -1) {
-			perror("database_init: ");
-			die("Failed to initialize the database\nAborting\n");
-		}
-		/* remove any trailing '/' characters from the path */
-		if (dbroot.size() > 1)
-			while (dbroot.size() > 1 && dbroot.back() == '/')
-				dbroot.pop_back();
-		dbfiles = get_db_files(dbroot);
+	if (dbroot.empty())       die("Database root is required\n");
+
+	/* remove any trailing '/' characters from the path */
+	if (dbroot.size() > 1)
+		while (dbroot.size() > 1 && dbroot.back() == '/')
+			dbroot.pop_back();
+	int status = database_init(dbroot.c_str());
+	if (status == -1) {
+		perror("database_init:");
+		die("Failed to initialize the database\nAborting\n");
 	}
+	dbfiles = get_db_files(dbroot);
 
 	curl = curl_easy_init();
 	for ( ; ac && *av; ac--, av++) {
 		auto ticker = upper(*av);
-		if (!dbfiles.empty()) {
-			auto fpath = find_file_by_ticker(dbroot, ticker, &dbfiles);
-			if (has_data(fpath, begin.c_str(), end.c_str()))
+		auto found = find_file_by_ticker(ticker, dbfiles);
+		std::string filename;
+		FILE *file;
+		if (found != dbfiles.end()) {
+			filename = *found;
+			if (has_data(filename, begin.c_str(), end.c_str())) {
+				printf("%s\n", filename.c_str());
 				continue;
+			} else { /* remove this file, replace it with the new one */
+				remove(filename.c_str());
+				*found = filename = make_filename(dbroot, ticker, begin.c_str(), end.c_str());
+			}
+		} else {
+			filename = make_filename(dbroot, ticker, begin.c_str(), end.c_str());
 		}
+		file = fopen(filename.c_str(), "w");
 		auto url = make_url(ticker, api_key, begin.c_str(), end.c_str());
 		char const *urlc = url.c_str();
 
 		curl_easy_setopt(curl, CURLOPT_URL, urlc);
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_callback);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_callback_fwrite);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
 		curl_easy_perform(curl);
-
-		if (!dbroot.empty()) {
-			auto filename = make_filename(dbroot, ticker, begin.c_str(), end.c_str());
-			FILE *file = fopen(filename.c_str(), "w");
-			if (!file) {
-				die("Failed to open file: %s\nAborting\n", filename.c_str());
-			}
-			writef(buffer, file);
-			fclose(file);
-		} else /* print everything to stdout */ {
-			/* here, we delimit the data by 'begin' and 'end' markers, so when we process it with another program
-			 * that program can tell which data belongs to which stock
-			 * sprintf will fill 'msgbuf' with begin:TICKER (or end:TICKER) where 'TICKER' is replaced with the
-			 * acutal stock symbol.
-			 * See also:
-			 *  $ man sprintf
-			 *  $ man fwrite
-			 */
-			char msgbuf[64];
-			sprintf(msgbuf, "begin:%s\n", ticker.c_str());
-			fwrite(msgbuf, strlen(msgbuf), 1, stdout);
-			writef(buffer, stdout);
-			sprintf(msgbuf, "end:%s\n", ticker.c_str());
-			fwrite(msgbuf, strlen(msgbuf), 1, stdout);
-		}
-		buffer.clear();   /* clear the memory buffer for next iteration (next stock data .csv) */
+		fclose(file);
+		printf("%s\n", filename.c_str());
 	}
 	curl_easy_cleanup(curl);
 }
+/*
+ * gdb
+ * set follow-fork-mode parent
+ * set detach-on-fork on
+ */
