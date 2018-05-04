@@ -24,14 +24,8 @@
 
 #include <curl/curl.h>
 
-/* DATE_FMT is the date format used for file naming
- * DDATE_FMT is the format used for the date labels in the actual file content
- * TODO: inspect quandl data and make sure DDATE_FMT is correct
- */
+/* date format used for file naming */
 #define DATE_FMT "%Y-%m-%d"
-#define DDATE_FMT "%Y-%m-%d"
-#define DATE_KEY "Date"
-#define DATA_SEP ','
 
 static int database_init(char const *path);          /* initializes the database if it does not exist */
 static std::string slurp(std::string filename);       /* read entire file into a string */
