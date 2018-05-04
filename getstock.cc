@@ -183,12 +183,12 @@ std::string make_filename(std::string const & dbroot, std::string const & ticker
 }
 std::vector<std::string> get_db_files(std::string const & dbroot)
 {
-	char command[256];
+	char command[512];
 	char buf[512];
 	FILE *ls;
 	std::vector<std::string> files;
 
-	sprintf(command, "ls %s/*.csv", dbroot.c_str());
+	sprintf(command, "ls %s/*.csv 2>/dev/null", dbroot.c_str());
 	ls = popen(command, "r");
 	while (fgets(buf, sizeof buf, ls)) {
 		strip(buf);
