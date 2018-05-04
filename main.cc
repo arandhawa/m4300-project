@@ -1,7 +1,9 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
 
+#include <map>
 #include <vector>
 #include <string>
 #include <iostream>
@@ -16,6 +18,8 @@
 #define DEFAULT_TCOST_MODEL_NAME "Per trade transaction costs"
 #define DEFAULT_TCOST 10.0
 
+#define MAX(x, y) ((x) > (y)) ? (x) : (y)
+
 /* different ways of computing transaction costs */
 enum TCostModel {
 	TCostNULL,
@@ -27,22 +31,58 @@ enum EModels {
 	MeanVar,
 	/* more models go here ...*/
 };
-
-static std::vector<std::vector<double> > read_stock_data(std::vector<std::string> const & filepaths, time_t start);
+static std::string upper(char const *s);
+static std::string ticker_from_filename(char const *filename);
+static std::map<std::string, std::vector<double> > read_stock_data(std::vector<std::string> const & filepaths,
+                                                                   time_t start, time_t end);
 static time_t strtotime(char const *s);               /* convert date time string to an integral representation (time_t) */
-static time_t read_until(FILE *file, time_t begin, int date_index);     /* read from data source until we hit a certain point in time (begin) */
+static time_t read_until(FILE *file, time_t begin, int date_index);/* read from data source until we hit a certain point in time (begin) */
 static int indexOf(char const *line, char const *field);
 static void die(char const *fmt, ...);               /* print a message and kill the program */
 static void warn(char const *fmt, ...);              /* print a message */
 static void usage(char const * argv0);
 
-std::vector<std::vector<double> >
-read_stock_data(std::vector<std::string> const & filepaths, time_t start)
+std::string upper(char const *s)
 {
-	std::vector<std::vector<double> > data;
+	int size = (int) strlen(s);
+	std::string ret;
+	ret.resize(size);
+	for (int i = 0; i < size; i++) {
+		ret[i] = toupper(s[i]);
+	}
+	return ret;
+}
+std::string ticker_from_filename(char const *filename)
+{
+	char buf[256];
+	char *pd;
+
+	strcpy(buf, filename);
+	pd = strchrnul(buf, '.');
+	*pd = '\0';
+	return upper(buf);
+}
+/*
+ * read_stock_data
+ *   return a map of ticker -> prices
+ */
+std::map<std::string, std::vector<double> >
+read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t end)
+{
+	/* it could be the case that the dates in the file do not match up.
+	 * We synchronize the dates by first getting the latest available starting
+	 * date, and reading all other files until we reach that point (or EOF).
+	 * So when we read from the files and save data in some arrays, it will
+	 * all be sync'd up by index
+	 */
+	std::map<std::string, std::vector<double> > data;
 	std::vector<double> prices;
+	std::vector<FILE *> files;
+	time_t latest_date;
 	char buf[256];
 	char *p;
+
+	latest_date = 0;
 	for (auto const & fp : filepaths) {
 		char const *f = fp.c_str();
 		FILE *file = fopen(f, "r");
@@ -51,10 +91,35 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start)
 			die("failed to open file: %s\nAborting\n", f);
 		}
 		fgets(buf, sizeof buf, file);
+		int date_index = indexOf(buf, "date");
+		time_t first_date = read_until(file, start, date_index);
+		auto ticker = ticker_from_filename(f);
+		latest_date = MAX(first_date, latest_date);
+		files.push_back(file);
+	}
+	for (int i = 0; i < (int) files.size(); i++) {
+		FILE *file = files[i];
+		auto fname = filepaths[i];
+		auto ticker = ticker_from_filename(fname.c_str());
+		rewind(file);
+		fgets(buf, sizeof buf, file);
 		int close_index = indexOf(buf, "Adj. Close");
 		int date_index = indexOf(buf, "date");
-		read_until(file, start, date_index);
-		while (fgets(buf, sizeof buf, file)) {
+		if (!read_until(file, latest_date, date_index)) {
+			data[ticker] = {};
+			fclose(file);
+			continue;
+		}
+                while (fgets(buf, sizeof buf, file)) {
+			/* check if date is past the end */
+			p = buf;
+			for (int i = 0; i < date_index; i++) {
+				p = strchr(p, DATA_SEP);
+				p++;
+			}
+			if (strtotime(p) > end)
+				break;
+			/* OK, read the price data */
 			p = buf;
 			for (int i = 0; i < close_index; i++) {
 				p = strchr(p, DATA_SEP);
@@ -68,7 +133,16 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start)
 			}
 			prices.push_back(price);
 		}
-		data.emplace_back(prices);
+		data[ticker] = prices;
+		prices.clear();
+		fclose(file);
+	}
+	int size = data.begin()->second.size();
+	for (auto const & pair : data) {
+		int tmp = pair.second.size();
+		if (size != tmp) {
+			die("BUG: Data should have all the same dimensions!\n");
+		}
 	}
 	return data;
 }
@@ -374,6 +448,11 @@ int main(int argc, char **argv)
 	while (std::cin >> tmp) {
 		files.emplace_back(tmp);
 	}
-	auto data = read_stock_data(files, begin);
+
+	auto data = read_stock_data(files, begin, end);
+	for (auto & d : data) {
+		auto ticker = d.first;
+		auto & prices = d.second;
+	}
 	return 0;
 }
