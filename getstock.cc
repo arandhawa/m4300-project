@@ -288,8 +288,7 @@ void usage(char const *argv0)
 	"                          default behavior is to print to stdout\n"
 	"    TICKER...             One or more stock symbols.\n"
 	"\n"
-	"Notes:\n"
-	"    Only the API key and the stock symbols are required arguments\n"
+	"    All of the arguments are required\n"
 	,argv0);
 	exit(1);
 }
