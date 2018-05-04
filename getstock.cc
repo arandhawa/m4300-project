@@ -293,35 +293,6 @@ void usage(char const *argv0)
 	,argv0);
 	exit(1);
 }
-/*
-void test()
-{
-	char const *begin = "2018-05-01";
-	char const *end   = "2018-02-01";
-	char const *tickers[] = {
-		"Bar", "Baz", "Foo",
-	};
-	char const *dbroot = ".";
-	auto dbfiles = get_db_files(dbroot);
-	for (char const *ticker : tickers) {
-		auto path = find_file_by_ticker(dbroot, ticker, &dbfiles);
-		if (path.empty()) {
-			continue;
-		} else {
-			int s = has_data(path, begin, end);
-			if (s) {
-				printf("%s has data between %s and %s\n", path.c_str(), begin, end);
-			} else {
-				printf("%s does not have data between %s and %s\n", path.c_str(), begin, end);
-			}
-		}
-	}
-}
-int main()
-{
-	test();
-}
-*/
 int main(int argc, char **argv)
 {
 	char const *argv0 = argv[0];
