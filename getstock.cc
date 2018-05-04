@@ -380,6 +380,7 @@ int main(int argc, char **argv)
 		}
 	}
 	if (!ac)                  die("Must specify at least one stock symbol\n");
+	if (begin.empty() || end.empty()) die("Must specify begin and end dates\n");
 	if (api_key_file.empty()) die("API Key file missing\n");
 
 	api_key = slurp(api_key_file);
@@ -399,6 +400,7 @@ int main(int argc, char **argv)
 	}
 	dbfiles = get_db_files(dbroot);
 
+	printf("%s\n%s\n", begin.c_str(), end.c_str());
 	curl = curl_easy_init();
 	for ( ; ac && *av; ac--, av++) {
 		auto ticker = upper(*av);
