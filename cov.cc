@@ -1,78 +1,77 @@
-#include <stdio.h>
-#include <vector>
+/*
+ * Computing the covariance matrix
+ */
+#include <assert.h>
+#include <iostream>
 
-double mean(std::vector<double> const & x)
-{
-	double s;
-	int size;
+#include <Eigen/Core>
 
-	s = 0.0;
-	size = x.size();
-	for (int i = 0; i < size; i++) {
-		s += x[i];
-	}
-	return s / (double)size;
-}
-double var(std::vector<double> const & x,
-	   double *_mx1)
-{
-	double mx1;
-	if (!_mx1)
-		mx1 = mean(x);
-	else
-		mx1 = *_mx1;
-	
-	std::vector<double> v;
-	int size;
-	size = x.size();
-	v.resize(size);
-	for (int i = 0; i < size; i++) {
-		double tmp = x[i] - mx1;
-		v.push_back(tmp);
-	}
-	return mean(v);
+using namespace Eigen;
 
-}
-double cov(std::vector<double> const & x1,
-           std::vector<double> const & x2,
-	   double *_mx1, double *_mx2)
+MatrixXd cov(MatrixXd const & m)
 {
-	double mx1, mx2;
-	if (!_mx1)
-		mx1 = mean(x1);
-	else
-		mx1 = *_mx1;
-	if (!_mx2)
-		mx2 = mean(x2);
-	else
-		mx2 = *_mx2;
-	
-	std::vector<double> c;
-	int size;
-	size = x1.size();
-	c.resize(size);
-#ifdef DEBUG
-	assert(size == (int) x2.size() && "Invalid dimensions");
-#endif
-	for (int i = 0; i < size; i++) {
-		double tmp = (x1[i] - mx1) * (x2[i] - mx2);
-		c[i] = tmp;
+	/* please see https://stats.stackexchange.com/a/100948
+	 * here, each column of 'm' is a variable, for which each
+	 * row represents an observation.
+	 * the covariance matrix will be of dimension k-by-k
+	 * where k = ncol(m)
+	 *
+	 * in the loop below, we use .array() because Eigen differentiates
+	 * between 'Mathematical Vectors' and 'Arrays'.
+	 * if we keep it as v1 * v2 without casting v1 and v2 to
+	 * an Eigen 'ArrayXd' (instead of Eigen 'VectorXd')
+	 * Eigen will perform a dot product instead of elementwise product
+	 * (it does this by overloading operator* for each type)
+	 * see: https://eigen.tuxfamily.org/dox/group__TutorialArrayClass.html
+	 *
+	 * We want to use an elementwise product.
+	 */
+	assert(m.rows() > 1 && "Rows must be greater than 1 for cov function");
+
+	MatrixXd C;
+	VectorXd means;
+	int nrow, ncol, i, k;
+
+	means = m.colwise().mean(); /* means[i] = mean of values in column 'i' */
+	nrow = m.rows();
+	ncol = m.cols();
+	C.resize(ncol, ncol);
+
+	for (k = 0; k < ncol; k++) {
+		for (i = 0; i <= k; i++) {
+			C(i, k) = ((m.col(i).array() - means(i)) *
+			           (m.col(k).array() - means(k))).sum() /
+				   (double (nrow - 1)); 
+		}
 	}
-	return mean(c);
+	/* the covariance matrix is symetrical. Above, we have only computed
+	 * the upper right half of it.
+	 * We just copy the data to the lower left half.
+	 */
+	for (k = 0; k < ncol; k++) {
+		for (i = k + 1; i < ncol; i++) {
+			C(i, k) = C(k, i);
+		}
+	}
+	return C;
 }
 int main()
 {
-	std::vector<double> x1 = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-	std::vector<double> x2 = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-	//std::vector<double> x2 = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+	MatrixXd R;
 
-	double c1 = cov(x1, x2, NULL, NULL);
-	double mx1 = mean(x1);
-	double mx2 = mean(x2);
-	double c2 = cov(x1, x2, &mx1, &mx2);
+	R.resize(4,2);
+	R << 0.4, 0.10,
+	     0.5, 0.20,
+	     0.55, 0.18,
+	     0.88, 0.05;
 
-	printf("%.4f %.4f\n", c1, c2);
-	printf("%.4f %.4f\n", var(x1, NULL), var(x2, NULL));
+	std::cout << R << '\n';
 
+	VectorXd mean = R.colwise().mean();
 
+	std::cout << "Mean:\n" << mean << '\n';
+	
+	MatrixXd C = cov(R);
+
+	std::cout << "Covariance matrix:\n" << C << '\n';
 }
