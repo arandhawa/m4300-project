@@ -8,6 +8,10 @@
 #include <string>
 #include <iostream>
 
+#include <Eigen/Core>
+
+using namespace Eigen;
+
 /* DATE_FMT is a format string used to parse a date of the form YYYY-mm-dd
  * DATE_KEY is the column name of the 'date' field. used to get the index of the field
  * DATA_SEP is the separator in the CSV file
@@ -59,6 +63,8 @@ static time_t strtotime(char const *s);  /* convert date time string to an integ
 static time_t read_until(FILE *file, time_t begin, int date_index);
 /*^read from data source until we hit a certain point in time (begin) */
 static int indexOf(char const *line, char const *field);
+static VectorXd weeklyReturns(std::vector<double> const & prices);
+static MatrixXd cov(MatrixXd const & m);
 static void die(char const *fmt, ...);   /* print a message and kill the program */
 static void warn(char const *fmt, ...);  /* print a message */
 static void usage(char const * argv0);
@@ -277,6 +283,76 @@ int indexOf(char const *line, char const *field)
 		die("Field not found in data: %s\n", field);
 	}
 	return index;
+}
+/*
+ * Given a vector of prices for a given security
+ * return the vector containing the weekly returns for that security
+ * We compute weekly returns as:
+ *    weeklyReturns = (p[i] - p[i-4]) / p[i-4],  4 <= i < n;
+ * which is the change over a 5 day period
+ * ex: let i = 4, at index 4 we are at the 5th day
+ *                at index i - 4 = 0 we are at the first day
+ * so we can imagine this is the change from monday's closing price
+ * to friday's closing price.
+ */
+VectorXd weeklyReturns(std::vector<double> const & prices)
+{
+	VectorXd returns;
+	int i, n;
+
+	n = (int) prices.size();
+	returns.resize(n / 5);
+	for (i = 0; i < returns.size(); i++) {
+		returns(i) = (prices[i+4] - prices[i]) / prices[i];
+	}
+	return returns;
+}
+MatrixXd cov(MatrixXd const & m)
+{
+	/* please see https://stats.stackexchange.com/a/100948
+	 * here, each column of 'm' is a variable, for which each
+	 * row represents an observation.
+	 * the covariance matrix will be of dimension k-by-k
+	 * where k = ncol(m)
+	 *
+	 * in the loop below, we use .array() because Eigen differentiates
+	 * between 'Mathematical Vectors' and 'Arrays'.
+	 * if we keep it as v1 * v2 without casting v1 and v2 to
+	 * an Eigen 'ArrayXd' (instead of Eigen 'VectorXd')
+	 * Eigen will perform a dot product instead of elementwise product
+	 * (it does this by overloading operator* for each type)
+	 * see: https://eigen.tuxfamily.org/dox/group__TutorialArrayClass.html
+	 *
+	 * We want to use an elementwise product.
+	 */
+	assert(m.rows() > 1 && "Rows must be greater than 1 for cov function");
+
+	MatrixXd C;
+	VectorXd means;
+	int nrow, ncol, i, k;
+
+	means = m.colwise().mean(); /* means[i] = mean of values in column 'i' */
+	nrow = m.rows();
+	ncol = m.cols();
+	C.resize(ncol, ncol);
+
+	for (k = 0; k < ncol; k++) {
+		for (i = 0; i <= k; i++) {
+			C(i, k) = ((m.col(i).array() - means(i)) *
+			           (m.col(k).array() - means(k))).sum() /
+				   (double (nrow - 1));
+		}
+	}
+	/* the covariance matrix is symetrical. Above, we have only computed
+	 * the upper right half of it.
+	 * We just copy the data to the lower left half.
+	 */
+	for (k = 0; k < ncol; k++) {
+		for (i = k + 1; i < ncol; i++) {
+			C(i, k) = C(k, i);
+		}
+	}
+	return C;
 }
 /*
  * print a message and kill the program
@@ -521,15 +597,27 @@ int main(int argc, char **argv)
 		files.emplace_back(tmp);
 	}
 
-	/* here, data is a map of the tickers (string) to a vector (array) of prices */
+	/* here, data is a map of the tickers (string) to a vector (array) of prices.
+	 * we compute the weekly returns of the assets and stick them in an Eigen Matrix.
+	 * we need to keep an ordered list (an array) of the tickers which we can index into,
+	 * so we know which column in the matrix corresponds with which security
+	 */
+	MatrixXd R;
+	int nrow, colIndex;
+	std::vector<std::string> tickers;
+
 	auto data = read_stock_data(files, begin, end);
+	nrow = (*data.begin()).second.size();  /* the number of prices we have for each stock */
+	R.resize(nrow / 5, data.size());       /* divide by five b/c weekly returns... one column per stock */
+	colIndex = 0;
 	for (auto & d : data) {
 		auto ticker = d.first;
 		auto & prices = d.second;
-		/* DO STUFF WITH STOCK PRICES HERE
-		 * TODO: compute returns here, save in map (ticker -> returns)
-		 */
+		tickers.push_back(ticker);
+		R.col(colIndex++) = weeklyReturns(prices);
 	}
+	MatrixXd C = cov(R);
+	std::cout << "Covariance matrix:\n" << C << '\n';
 	/*
 	 * PORTFOLIO OPTIMIZATION CODE GOES HERE
 	 * TODO:
