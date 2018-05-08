@@ -8,10 +8,17 @@
 #include <string>
 #include <iostream>
 
+/* DATE_FMT is a format string used to parse a date of the form YYYY-mm-dd
+ * DATE_KEY is the column name of the 'date' field. used to get the index of the field
+ * DATA_SEP is the separator in the CSV file
+ */
 #define DATE_FMT "%Y-%m-%d"
 #define DATE_KEY "Date"
 #define DATA_SEP ','
 
+/* Default values when user input is omitted.
+ * FIXME: questions will all be 'minimize variance' so DEFAULT_VARIANCE is useless
+ */
 #define DEFAULT_INITIAL_CAPITAL 100000.0
 #define DEFAULT_VARIANCE 0.10
 #define DEFAULT_MEAN_RETURN 0.05
@@ -32,6 +39,9 @@ static const char *tcost_names[] = {
 	"Per Trade",
 	"Per Share",
 };
+/*
+ * different types of models used
+ */
 enum EModels {
 	ModelNULL,
 	MeanVar,
@@ -45,13 +55,17 @@ static std::string upper(char const *s);
 static std::string ticker_from_filename(char const *filename);
 static std::map<std::string, std::vector<double> > read_stock_data(std::vector<std::string> const & filepaths,
                                                                    time_t start, time_t end);
-static time_t strtotime(char const *s);               /* convert date time string to an integral representation (time_t) */
-static time_t read_until(FILE *file, time_t begin, int date_index);/* read from data source until we hit a certain point in time (begin) */
+static time_t strtotime(char const *s);  /* convert date time string to an integral representation (time_t) */
+static time_t read_until(FILE *file, time_t begin, int date_index);
+/*^read from data source until we hit a certain point in time (begin) */
 static int indexOf(char const *line, char const *field);
-static void die(char const *fmt, ...);               /* print a message and kill the program */
-static void warn(char const *fmt, ...);              /* print a message */
+static void die(char const *fmt, ...);   /* print a message and kill the program */
+static void warn(char const *fmt, ...);  /* print a message */
 static void usage(char const * argv0);
 
+/*
+ * upper case a string
+ */
 std::string upper(char const *s)
 {
 	int size = (int) strlen(s);
@@ -62,6 +76,11 @@ std::string upper(char const *s)
 	}
 	return ret;
 }
+/*
+ * Given a filename of the form
+ * TICKER.begin.end.csv
+ * return TICKER
+ */
 std::string ticker_from_filename(char const *filename)
 {
 	char buf[256];
@@ -82,15 +101,15 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t
 	/* it could be the case that the dates in the file do not match up.
 	 * We synchronize the dates by first getting the latest available starting
 	 * date, and reading all other files until we reach that point (or EOF).
-	 * So when we read from the files and save data in some arrays, it will
-	 * all be sync'd up by index
+	 * So when we read from the files and save data in some arrays, the dates will
+	 * all be sync'd up by index (assuming there are no missing rows in the data)
 	 */
 	std::map<std::string, std::vector<double> > data;
 	std::vector<double> prices;
 	std::vector<FILE *> files;
 	time_t latest_date;
 	char buf[256];
-	char *p;
+	char *p; /* position in a line of the CSV file */
 
 	latest_date = 0;
 	for (auto const & fp : filepaths) {
@@ -100,10 +119,9 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t
 			perror("getstocks");
 			die("failed to open file: %s\nAborting\n", f);
 		}
-		fgets(buf, sizeof buf, file);
+		fgets(buf, sizeof buf, file); /* read the header of the file, to get index of date field */
 		int date_index = indexOf(buf, "date");
 		time_t first_date = read_until(file, start, date_index);
-		auto ticker = ticker_from_filename(f);
 		latest_date = MAX(first_date, latest_date);
 		files.push_back(file);
 	}
@@ -111,11 +129,13 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t
 		FILE *file = files[i];
 		auto fname = filepaths[i];
 		auto ticker = ticker_from_filename(fname.c_str());
+		/* start file reading from beginning, to get index of date, and Adj. Close */
 		rewind(file);
 		fgets(buf, sizeof buf, file);
 		int close_index = indexOf(buf, "Adj. Close");
 		int date_index = indexOf(buf, "date");
 		if (!read_until(file, latest_date, date_index)) {
+			/* read_until == 0, so no date >= latest_date was found */
 			data[ticker] = {};
 			fclose(file);
 			continue;
@@ -147,6 +167,10 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t
 		prices.clear();
 		fclose(file);
 	}
+	/* make sure that data have same dimensions
+	 * FIXME: maybe clamp all the price vectors to be the same size
+	 * (i.e. min(p.size() for p in prices))
+	 */
 	int size = data.begin()->second.size();
 	for (auto const & pair : data) {
 		int tmp = pair.second.size();
@@ -156,6 +180,13 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t
 	}
 	return data;
 }
+/*
+ * Given a string of the form
+ * YYYY-mm-dd
+ * parse it and save it as an integral type (time_t)
+ * FYI: time_t is usually defined as an unsigned integer
+ *      it represents the number of seconds elapsed since the Unix epoch (1970-01-01)
+ */
 time_t strtotime(char const *s)
 {
 	struct tm tm;
@@ -182,7 +213,7 @@ time_t read_until(FILE *file, time_t begin, int date_index)
 
 	/* iterate over dates in file until date >= begin */
 	while (fgets(buf, sizeof buf, file)) {
-		nread = strlen(buf);
+		nread = strlen(buf);   /* remember how much to rewind by */
 		date = buf;
 		for (int i = 0; i < date_index; i++) {
 			date = strchr(date, DATA_SEP);
@@ -197,6 +228,9 @@ time_t read_until(FILE *file, time_t begin, int date_index)
 		}
 		tmp = mktime(&tm);
 		if (tmp >= begin) {
+			/* the time for this line in the file is >= the specified start
+			 * date, rewind so the caller can re-read this line in the future
+			 */
 			fseek(file, SEEK_CUR, -nread);
 			return tmp;
 		}
@@ -244,6 +278,9 @@ int indexOf(char const *line, char const *field)
 	}
 	return index;
 }
+/*
+ * print a message and kill the program
+ */
 void die(char const *fmt, ...)
 {
 	va_list args;
@@ -253,6 +290,9 @@ void die(char const *fmt, ...)
 	va_end(args);
 	exit(1);
 }
+/*
+ * print a message
+ */
 void warn(char const *fmt, ...)
 {
 	va_list args;
@@ -326,12 +366,12 @@ void usage(char const *argv0)
 }
 int main(int argc, char **argv)
 {
-	std::vector<EModels> models;
+	std::vector<EModels> models; /* models, as specified by user (default is Mean-Variance) */
 	double initial_capital;
-	double variance;
-	double mean_return;
-	double tcost;
-	enum TCostModel tcm;
+	double variance;     /* FIXME: questions don't involve known variance, just a minimize. Remove me */
+	double mean_return;  /* required rate of return */
+	double tcost;        /* transaction cost, USD */
+	enum TCostModel tcm; /* transaction cost per share, or per trade? */
 
 	initial_capital = 0.0;
 	variance = 0.0;
@@ -459,6 +499,7 @@ int main(int argc, char **argv)
 		printf("Mean Return = %.4f\n", mean_return);
 	}
 
+	/* begin_date, end_date are the periods to run the backtest on */
 	std::string begin_date;
 	std::string end_date;
 	time_t begin, end;
@@ -473,22 +514,29 @@ int main(int argc, char **argv)
 	if (end == 0) {
 		die("Error parsing date: %s\n", end_date.c_str());
 	}
+	/* gather a list of filenames from the standard input */
 	std::vector<std::string> files;
 	std::string tmp;
 	while (std::cin >> tmp) {
 		files.emplace_back(tmp);
 	}
 
+	/* here, data is a map of the tickers (string) to a vector (array) of prices */
 	auto data = read_stock_data(files, begin, end);
 	for (auto & d : data) {
 		auto ticker = d.first;
 		auto & prices = d.second;
-		/* DO STUFF WITH STOCK PRICES HERE */
+		/* DO STUFF WITH STOCK PRICES HERE
+		 * TODO: compute returns here, save in map (ticker -> returns)
+		 */
 	}
 	/*
-	 *
 	 * PORTFOLIO OPTIMIZATION CODE GOES HERE
-	 *
+	 * TODO:
+	 *   compute covariance matrix
+	 *   run simulation
+	 *   ...
 	 */
+	std::vector<double> w;
 	return 0;
 }
