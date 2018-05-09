@@ -7,6 +7,8 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <utility>  /* std::move */
+#include <random>   /* std::uniform_real_distribution */
 
 #include <Eigen/Core>
 
@@ -21,40 +23,15 @@ using namespace Eigen;
 #define DATA_SEP ','
 
 /* Default values when user input is omitted.
- * FIXME: questions will all be 'minimize variance' so DEFAULT_VARIANCE is useless
  */
 #define DEFAULT_INITIAL_CAPITAL 100000.0
-#define DEFAULT_VARIANCE 0.10
-#define DEFAULT_MEAN_RETURN 0.05
+#define DEFAULT_MIN_RETURN 0.002
 #define DEFAULT_TCOST_MODEL TCostPerTrade
 #define DEFAULT_TCOST_MODEL_NAME "Per trade transaction costs"
 #define DEFAULT_TCOST 10.0
 
 #define MAX(x, y) ((x) > (y)) ? (x) : (y)
 
-/* different ways of computing transaction costs */
-enum TCostModel {
-	TCostNULL,
-	TCostPerTrade,
-	TCostPerShare,
-};
-static const char *tcost_names[] = {
-	NULL,
-	"Per Trade",
-	"Per Share",
-};
-/*
- * different types of models used
- */
-enum EModels {
-	ModelNULL,
-	MeanVar,
-	/* more models go here ...*/
-};
-static const char *model_names[] = {
-	NULL,
-	"Mean-Variance",
-};
 static std::string upper(char const *s);
 static std::string ticker_from_filename(char const *filename);
 static std::map<std::string, std::vector<double> > read_stock_data(std::vector<std::string> const & filepaths,
@@ -380,36 +357,17 @@ void warn(char const *fmt, ...)
 void usage(char const *argv0)
 {
 	printf(
-	"Usage: %s [-h|--help] [-c $$$] [-t <ps|pt> $$$] [-m models...]\n"
-	"          [-v variance] [-r return]\n"
+	"Usage: %s [-h|--help] [-c $$$] [-t $$$]\n"
+	"          [-r return]\n"
 	"    -h,--help           show this help message\n"
 	"    -c $$$              initial capital\n"
-	"    -t pt|ps $$$        transaction cost model. see below\n"
-	"    -m models           names of the models to use. See list below\n"
-	"    -v variance         Maximum portfolio variance, in percentage form (decimal)\n"
+	"    -t $$$              transaction cost model. see below\n"
 	"    -r return           Minimum portfolio mean return, in percentage form (decimal)\n"
 	"See below for info on default values and input data\n"
 	"\n"
 	"Transaction Costs (-t)\n"
-	"    'pt' means 'per trade' and 'ps' means 'per share'\n"
-	"    when specifying transaction costs with -t, the first argument should be\n"
-	"    one of these two abbreviations. The second argument should be the value to\n"
-	"    use for the transaction costs.\n"
 	"    ex)\n"
-	"        -t pt 10.0 == transaction costs of 10 dollars per trade\n"
-	"        -t ps 0.05 == transaction costs of 5 cents per share\n"
-	"\n"
-	"Models (-m)\n"
-	"    The models currently implemented are:\n"
-	"        Markowitz Mean-Variance = meanvar\n"
-	"    example:\n"
-	"        -m meanvar\n"
-	"    Specifies that the program should do Mean-Variance optimization\n"
-	"    Multiple models can be specified\n"
-	"\n"
-	"Variance (-v)\n"
-	"    The value shall be specified in decimal notation.\n"
-	"    For example, a variance of 8 percent should be specified as 0.08\n"
+	"        -t 10.0 == transaction costs of 10 dollars per trade\n"
 	"\n"
 	"Returns (-r)\n"
 	"    Just like variance, specify in decimal notation.\n"
@@ -417,7 +375,6 @@ void usage(char const *argv0)
 	"Default values\n"
 	"    If the command options are not specified, the following defaults will be assumed:\n"
 	"        Initial capital = %.1f\n"
-	"        Variance = %.2f\n"
 	"        Mean return = %.2f\n"
 	"        Transaction cost model = %s\n"
 	"        Transaction costs = %.2f\n"
@@ -430,30 +387,130 @@ void usage(char const *argv0)
 	"    The files must be in CSV format, with column labels\n"
 	"\n"
 	"Example usage (using the getstock program to get the data)\n"
-	"    $ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -o data -- JPM BAC GS | %s -c 100000 -t pt 10.0 -m meanvar -v 0.04 -r 0.07\n"
+	"    $ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -o data -- JPM BAC GS | %s -c 100000 -t 10.0 -m meanvar -r 0.07\n"
 	,argv0
 	,DEFAULT_INITIAL_CAPITAL
-	,DEFAULT_VARIANCE
-	,DEFAULT_MEAN_RETURN
+	,DEFAULT_MIN_RETURN
 	,DEFAULT_TCOST_MODEL_NAME
 	,DEFAULT_TCOST
 	,argv0);
 	exit(1);
 }
+
+/*
+ * R = returns matrix
+ * C = covariance matrix
+ */
+int run(MatrixXd const & R, MatrixXd const & C, VectorXd mean_returns,
+         int nsim, double min_return, double init_capital,
+	 std::vector<VectorXd> *weights,
+	 std::vector<double> *variances,
+	 std::vector<double> *returns)
+{
+	int n;
+	int ncol;
+	ncol = C.cols(); /* number of columns, or stocks/variables in dataset */
+#pragma omp parallel
+	{
+		if (omp_get_thread_num() == 0)
+			n = omp_get_num_threads();
+	}
+#pragma omp barrier
+
+#pragma omp parallel num_threads(n)
+	{
+		/* collecting stats, tl stands for 'thread-local'
+		 * we will aggregate all these together in 3 vectors, and report
+		 * our findings after all threads finish simulation
+		 */ 
+		std::vector<VectorXd> tl_weights;
+		std::vector<double> tl_returns;
+		std::vector<double> tl_variances;
+
+		tl_weights.reserve(nsim / n);
+		tl_returns.reserve(nsim / n);
+		tl_variances.reserve(nsim / n);
+
+		VectorXd w;
+		w.resize(ncol);  /* one weight per security */
+
+		std::mt19937 engine(time(NULL));
+		std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+		for (int i = 0; i < nsim / n; i++) {
+			/* make some random weights, ensure they sum up to one */
+			double sum = 0.0;
+			for (int i = 0; i < ncol; i++) {
+				double tmp = dist(engine);
+				w[i] = tmp;
+				sum += tmp;
+			}
+			for (int i = 0; i < ncol; i++) {
+				w[i] /= sum;
+			}
+			double test = w.sum();
+			double var = w.transpose() * C * w;
+			double mu  = w.transpose() * mean_returns;
+			if (((mu + 1) * init_capital) >= min_return) {
+				tl_weights.push_back(w);
+				tl_variances.push_back(var);
+				tl_returns.push_back(mu);
+			}
+		}
+		/* append thread local weights.
+		 * 'move iterators' will call the move constructor when appending the thread_local
+		 * weights to the 'master list' (avoids deep copy of data)
+		 */
+#pragma omp critical
+		weights->insert(weights->end(), std::make_move_iterator(tl_weights.begin()),
+		                                std::make_move_iterator(tl_weights.end()));
+		variances->insert(variances->end(), tl_variances.begin(), tl_variances.end());
+		returns->insert(returns->end(),     tl_returns.begin(), tl_returns.end());
+	}
+#pragma omp barrier
+	auto found = std::min_element(variances->begin(), variances->end());
+	if (found == variances->end()) {
+		die("Infeasible problem :(\n");
+	}
+	int i = found - variances->begin();
+	return i;
+}
+
+/*
+ * remove a row (index == rm) from a matrix
+ */
+void rmrow(MatrixXd & matrix, int rm)
+{
+	int nrow = matrix.rows() - 1;
+	int ncol = matrix.cols();
+
+	if (rm < nrow) {
+		matrix.block(rm, 0, nrow - rm, ncol) = matrix.block(rm + 1, 0, nrow - rm, ncol);
+	}
+	matrix.conservativeResize(nrow, ncol);
+}
+/*
+ * remove a column (index == rm) from a matrix
+ */
+void rmcol(MatrixXd & matrix, int rm)
+{
+	int nrow = matrix.rows();
+	int ncol = matrix.cols() - 1;
+
+	if (rm < ncol) {
+		matrix.block(0, rm, nrow, ncol - rm) = matrix.block(0, rm + 1, nrow, ncol - rm);
+	}
+	matrix.conservativeResize(nrow, ncol);
+}
 int main(int argc, char **argv)
 {
-	std::vector<EModels> models; /* models, as specified by user (default is Mean-Variance) */
 	double initial_capital;
-	double variance;     /* FIXME: questions don't involve known variance, just a minimize. Remove me */
-	double mean_return;  /* required rate of return */
+	double min_return;   /* required rate of return */
 	double tcost;        /* transaction cost, USD */
-	enum TCostModel tcm; /* transaction cost per share, or per trade? */
 
 	initial_capital = 0.0;
-	variance = 0.0;
-	mean_return = 0.0;
+	min_return = 0.0;
 	tcost = 0.0;
-	tcm = TCostNULL;
 
 	char const *argv0 = argv[0];
 	int ac;
@@ -479,20 +536,6 @@ int main(int argc, char **argv)
 				break;
 			case 't':
 				tmp = (opt[1] != '\0') ? (opt + 1) : (--ac, *(++av));
-				if (strcmp(tmp, "ps") == 0) {
-					tcm = TCostPerShare;
-				} else if (strcmp(tmp, "pt") == 0) {
-					tcm = TCostPerTrade;
-				} else {
-					warn("Transaction cost model must be \"ps\" or \"pt\".\n");
-					usage(argv0);
-				}
-				--ac; ++av;
-				tmp = *av;
-				if (*tmp == '-') {
-					warn("Transaction cost option is missing its value.\n");
-					usage(argv0);
-				}
 				tcost = strtod(tmp, &endptr);
 				if (tcost == 0.0 && endptr == tmp) {
 					perror("strtod:");
@@ -500,35 +543,12 @@ int main(int argc, char **argv)
 				}
 				brk_ = 1;
 				break;
-			case 'm':
-				tmp = (opt[1] != '\0') ? (opt + 1) : (--ac, *(++av));
-				while (tmp != NULL && *tmp != '-') {
-					if (strcmp(tmp, "meanvar") == 0) {
-						models.push_back(MeanVar);
-					} else {
-						die("Unknown model name: %s\n", tmp);
-					}
-					--ac; ++av;
-					tmp = *av;
-				}
-				if (tmp != NULL && *tmp == '-') {
-					++ac; --av;
-				}
-				brk_ = 1;
-				break;
-			case 'v':
-				tmp = (opt[1] != '\0') ? (opt + 1) : (--ac, *(++av));
-				variance = strtod(tmp, &endptr);
-				if (variance == 0.0 && endptr == tmp) {
-					die("Failed to parse variance: %s\n", tmp);
-				}
-				brk_ = 1;
-				break;
+				
 			case 'r':
 				tmp = (opt[1] != '\0') ? (opt + 1) : (--ac, *(++av));
-				mean_return = strtod(tmp, &endptr);
-				if (mean_return == 0.0 && endptr == tmp) {
-					die("Failed to parse mean_return: %s\n", tmp);
+				min_return = strtod(tmp, &endptr);
+				if (min_return == 0.0 && endptr == tmp) {
+					die("Failed to parse min_return: %s\n", tmp);
 				}
 				brk_ = 1;
 				break;
@@ -536,16 +556,7 @@ int main(int argc, char **argv)
 				usage(argv0);
 			default:
 				usage(argv0);
-			}
-		}
-	}
-	if (models.empty()) {
-		warn("No models specified, using default of Markowitz Mean-variance\n");
-		models.push_back(MeanVar);
-	} else {
-		printf("The models selected are:\n");
-		for (auto m : models) {
-			printf("%s\n", model_names[m]);
+			};
 		}
 	}
 	if (initial_capital == 0.0) {
@@ -554,25 +565,11 @@ int main(int argc, char **argv)
 	} else {
 		printf("initial capital = %.1f\n", initial_capital);
 	}
-	if (tcm == TCostNULL) {
-		warn("No transaction cost model specified, using default of %.2f per trade\n", DEFAULT_TCOST);
-		tcm = TCostPerTrade;
-		tcost = DEFAULT_TCOST;
+	if (min_return == 0.0) {
+		warn("Mean return not specified. Using default value %.4f\n", DEFAULT_MIN_RETURN);
+		min_return = DEFAULT_MIN_RETURN;
 	} else {
-		printf("Transaction cost model: %s\n", tcost_names[tcm]);
-		printf("Transaction cost: %.4f\n", tcost);
-	}
-	if (variance == 0.0) {
-		warn("Variance not specified. Using default value %.4f\n", DEFAULT_VARIANCE);
-		variance = DEFAULT_VARIANCE;
-	} else {
-		printf("Variance = %.4f\n", variance);
-	}
-	if (mean_return == 0.0) {
-		warn("Mean return not specified. Using default value %.4f\n", DEFAULT_MEAN_RETURN);
-		mean_return = DEFAULT_MEAN_RETURN;
-	} else {
-		printf("Mean Return = %.4f\n", mean_return);
+		printf("Mean Return = %.4f\n", min_return);
 	}
 
 	/* begin_date, end_date are the periods to run the backtest on */
@@ -605,6 +602,7 @@ int main(int argc, char **argv)
 	MatrixXd R;
 	int nrow, colIndex;
 	std::vector<std::string> tickers;
+	std::vector<std::string> optimal_tickers;
 
 	auto data = read_stock_data(files, begin, end);
 	nrow = (*data.begin()).second.size();  /* the number of prices we have for each stock */
@@ -617,14 +615,48 @@ int main(int argc, char **argv)
 		R.col(colIndex++) = weeklyReturns(prices);
 	}
 	MatrixXd C = cov(R);
-	std::cout << "Covariance matrix:\n" << C << '\n';
-	/*
-	 * PORTFOLIO OPTIMIZATION CODE GOES HERE
-	 * TODO:
-	 *   compute covariance matrix
-	 *   run simulation
-	 *   ...
-	 */
-	std::vector<double> w;
+
+	C = C.array() * 100.0;
+
+	int optimal_nstocks;
+	VectorXd optimal_weights;
+	double min_var = 10000000.0;
+	optimal_nstocks = C.cols();
+
+	VectorXd mean_returns = R.colwise().mean();
+	std::vector<VectorXd> weights;
+	std::vector<double> variances;
+	std::vector<double> returns;
+	while (C.cols() > 2) {
+		int lowest_index = run(R, C, mean_returns, 1000,
+		    (initial_capital * (min_return + 1)), initial_capital - (C.cols() * 10.0),
+		    &weights, &variances, &returns);
+		rmcol(R, lowest_index);
+		mean_returns = R.colwise().mean();
+		if (variances.size()) {
+			auto newmin_var = std::min_element(variances.begin(),variances.end());
+			int i = newmin_var - variances.begin();
+			if (*newmin_var < min_var) {
+				optimal_nstocks = C.cols();
+				optimal_weights = weights[i];
+				min_var = *newmin_var;
+				optimal_tickers.assign(tickers.begin(), tickers.end());
+			}
+		}
+		rmrow(C, lowest_index);
+		rmcol(C, lowest_index);
+		tickers.erase(tickers.begin() + lowest_index);
+
+		weights.clear();
+		variances.clear();
+		returns.clear();
+	}
+	printf("Optimal number of stocks: %d\n",optimal_nstocks);
+	double test = 0;
+	for (int i = 0; i < optimal_nstocks; i++) {
+		printf("%s %10.6f\n", optimal_tickers[i].c_str(), optimal_weights[i]);
+		test += optimal_weights[i];
+	}
+	printf("net weight: %.4f\n", test);
 	return 0;
 }

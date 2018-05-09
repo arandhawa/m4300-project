@@ -5,7 +5,7 @@ EIGEN_ROOT=/usr/include/eigen3
 all: main getstock cov
 
 main: main.cc
-	$(CXX) $^ -o $@ $(CFLAGS) -I$(EIGEN_ROOT)
+	$(CXX) $^ -o $@ $(CFLAGS) -fopenmp -I$(EIGEN_ROOT)
 getstock: getstock.cc
 	$(CXX) $^ -o $@ $(CFLAGS) -lcurl
 cov: cov.cc
