@@ -7,8 +7,10 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <algorithm>/* std::stable_partition */
 #include <utility>  /* std::move */
 #include <random>   /* std::uniform_real_distribution */
+#include <mutex>    /* for threadsafe printf */
 
 #include <Eigen/Core>
 
@@ -29,14 +31,17 @@ using namespace Eigen;
 #define DEFAULT_TCOST_MODEL TCostPerTrade
 #define DEFAULT_TCOST_MODEL_NAME "Per trade transaction costs"
 #define DEFAULT_TCOST 10.0
+#define SECONDS_IN_DAY 86400
 
 #define MAX(x, y) ((x) > (y)) ? (x) : (y)
+#define MIN(x, y) ((x) < (y)) ? (x) : (y)
 
 static std::string upper(char const *s);
 static std::string ticker_from_filename(char const *filename);
 static std::map<std::string, std::vector<double> > read_stock_data(std::vector<std::string> const & filepaths,
                                                                    time_t start, time_t end);
 static time_t strtotime(char const *s);  /* convert date time string to an integral representation (time_t) */
+static void timetostr(time_t t, char *s);
 static time_t read_until(FILE *file, time_t begin, int date_index);
 /*^read from data source until we hit a certain point in time (begin) */
 static int indexOf(char const *line, char const *field);
@@ -45,6 +50,15 @@ static MatrixXd cov(MatrixXd const & m);
 static void die(char const *fmt, ...);   /* print a message and kill the program */
 static void warn(char const *fmt, ...);  /* print a message */
 static void usage(char const * argv0);
+
+template <typename Iter, typename Container>
+typename Container::iterator index_remove(Iter ixbegin, Iter ixend, Container & C)
+{
+	int ix = 0;
+	return std::stable_partition(C.begin(),C.end(),[&](typename Container::value_type const & unused) {
+		return std::find(ixbegin,ixend,ix++) == ixend;
+	});
+}
 
 /*
  * upper case a string
@@ -79,7 +93,7 @@ std::string ticker_from_filename(char const *filename)
  *   return a map of ticker -> prices
  */
 std::map<std::string, std::vector<double> >
-read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t end)
+read_stock_data(std::vector<std::string> & filepaths, time_t start, time_t end)
 {
 	/* it could be the case that the dates in the file do not match up.
 	 * We synchronize the dates by first getting the latest available starting
@@ -88,38 +102,44 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t
 	 * all be sync'd up by index (assuming there are no missing rows in the data)
 	 */
 	std::map<std::string, std::vector<double> > data;
-	std::vector<double> prices;
-	std::vector<FILE *> files;
-	time_t latest_date;
+	std::vector<double> prices;         /* temp variable */
 	char buf[256];
 	char *p; /* position in a line of the CSV file */
+	std::vector<int> ixrm;  /* for index_remove - indices of any data sources to remove because they don't have correct data */
 
-	latest_date = 0;
-	for (auto const & fp : filepaths) {
-		char const *f = fp.c_str();
+	for (int i = 0; i < (int) filepaths.size(); i++) {
+		char const *f = filepaths[i].c_str();
 		FILE *file = fopen(f, "r");
 		if (!file) {
-			perror("getstocks");
-			die("failed to open file: %s\nAborting\n", f);
+			perror("fopen:");
+			die("Failed to open file %s aborting\n", f);
 		}
-		fgets(buf, sizeof buf, file); /* read the header of the file, to get index of date field */
-		int date_index = indexOf(buf, "date");
-		time_t first_date = read_until(file, start, date_index);
-		latest_date = MAX(first_date, latest_date);
-		files.push_back(file);
-	}
-	for (int i = 0; i < (int) files.size(); i++) {
-		FILE *file = files[i];
-		auto fname = filepaths[i];
-		auto ticker = ticker_from_filename(fname.c_str());
-		/* start file reading from beginning, to get index of date, and Adj. Close */
-		rewind(file);
-		fgets(buf, sizeof buf, file);
+		auto ticker = ticker_from_filename(f);
+		/* get index of date, and Adj. Close */
+		if (!fgets(buf, sizeof buf, file)) {
+			warn("File %s is empty\n",f);
+			ixrm.push_back(i);
+			fclose(file);
+			continue;
+		}
 		int close_index = indexOf(buf, "Adj. Close");
+		if (close_index == -1 && (close_index == indexOf(buf, "Close")) == -1) {
+			warn("Could not find closing price data for: %s\n", ticker.c_str());
+			ixrm.push_back(i);
+			fclose(file);
+			continue;
+		}
 		int date_index = indexOf(buf, "date");
-		if (!read_until(file, latest_date, date_index)) {
-			/* read_until == 0, so no date >= latest_date was found */
-			data[ticker] = {};
+		if (date_index == -1) {
+			warn("Could not find date field for: %s\n", ticker.c_str());
+			ixrm.push_back(i);
+			fclose(file);
+			continue;
+		}
+		if (!read_until(file, start, date_index)) {
+			/* read_until == 0, so no date >= start was found */
+			warn("Data has no observations >= start date: %s\n", f);
+			ixrm.push_back(i);
 			fclose(file);
 			continue;
 		}
@@ -150,15 +170,23 @@ read_stock_data(std::vector<std::string> const & filepaths, time_t start, time_t
 		prices.clear();
 		fclose(file);
 	}
-	/* make sure that data have same dimensions
-	 * FIXME: maybe clamp all the price vectors to be the same size
-	 * (i.e. min(p.size() for p in prices))
+	filepaths.erase(index_remove(ixrm.begin(),ixrm.end(), filepaths), filepaths.end());
+
+	/*
+	 * make sure that data have same dimensions
 	 */
-	int size = data.begin()->second.size();
+	int max_observations = 0;
 	for (auto const & pair : data) {
-		int tmp = pair.second.size();
-		if (size != tmp) {
-			die("BUG: Data should have all the same dimensions!\n");
+		max_observations = MAX(max_observations, pair.second.size());
+	}
+	max_observations = max_observations - 2; /* add some slack */
+	for (auto it = data.begin(); it != data.end(); ) {
+		if (it->second.size() < max_observations) {
+			warn("Not enough observations for %s: has %d of %d required\n", it->first.c_str(), it->second.size(), max_observations);
+			data.erase(it++);
+		} else {
+			it->second.resize(max_observations);
+			it++;
 		}
 	}
 	return data;
@@ -178,6 +206,12 @@ time_t strtotime(char const *s)
 		return 0;
 	return mktime(&tm);
 }
+void timetostr(time_t t, char *s)
+{
+	struct tm *tm;
+	tm = gmtime(&t);
+	strftime(s,64,"%Y-%m-%d",tm);
+}
 /*
  * read_until
  *   @file  := FILE stream
@@ -194,6 +228,11 @@ time_t read_until(FILE *file, time_t begin, int date_index)
 	struct tm tm;
 	time_t tmp;
 
+	char bg[64];
+	char ed[64];
+	
+	timetostr(begin, bg);
+
 	/* iterate over dates in file until date >= begin */
 	while (fgets(buf, sizeof buf, file)) {
 		nread = strlen(buf);   /* remember how much to rewind by */
@@ -201,15 +240,18 @@ time_t read_until(FILE *file, time_t begin, int date_index)
 		for (int i = 0; i < date_index; i++) {
 			date = strchr(date, DATA_SEP);
 			if (!date) {
+				return 0;
 				die("Date field not found in data\n");
 			}
 			date++;
 		}
 		memset(&tm, 0, sizeof tm);
 		if (!strptime(date, DATE_FMT, &tm)) {
+			return 0;
 			die("Failed to parse date in file\n");
 		}
 		tmp = mktime(&tm);
+		timetostr(tmp,ed);
 		if (tmp >= begin) {
 			/* the time for this line in the file is >= the specified start
 			 * date, rewind so the caller can re-read this line in the future
@@ -238,6 +280,7 @@ int indexOf(char const *line, char const *field)
 	if (end == NULL) {
 		if (strcmp(begin, field) == 0)
 			return 0;
+		return -1;
 		die("Field (%s) not found in string: %s\n", field, line);
 	}
 	lineEnd = begin + strlen(begin);
@@ -257,6 +300,7 @@ int indexOf(char const *line, char const *field)
 			nsep++;
 	}
 	if (index > nsep) {
+		return -1;
 		die("Field not found in data: %s\n", field);
 	}
 	return index;
@@ -344,6 +388,29 @@ void die(char const *fmt, ...)
 	exit(1);
 }
 /*
+ * thread safe printf
+ */
+void tsprintf(char const *fmt, ...)
+{
+	static std::mutex m;
+	std::lock_guard<std::mutex> lock(m);
+	va_list args;
+	va_start(args, fmt);
+	vfprintf(stdout, fmt, args);
+	va_end(args);
+}
+/*
+ * thread safe cout
+ */
+template <typename T>
+std::ostream & tscout(T const & t)
+{
+	static std::mutex m;
+	std::lock_guard<std::mutex> lock(m);
+	std::cout << t << '\n';
+	return std::cout;
+}
+/*
  * print a message
  */
 void warn(char const *fmt, ...)
@@ -370,14 +437,13 @@ void usage(char const *argv0)
 	"        -t 10.0 == transaction costs of 10 dollars per trade\n"
 	"\n"
 	"Returns (-r)\n"
-	"    Just like variance, specify in decimal notation.\n"
+	"    Specify in decimal notation; 0.10 == 10 percent.
 	"\n"
 	"Default values\n"
 	"    If the command options are not specified, the following defaults will be assumed:\n"
 	"        Initial capital = %.1f\n"
 	"        Mean return = %.2f\n"
-	"        Transaction cost model = %s\n"
-	"        Transaction costs = %.2f\n"
+	"        Transaction costs = %.2f per trade (i.e. per stock)\n"
 	"\n"
 	"Input Data\n"
 	"    From its standard input, the program reads:\n"
@@ -391,7 +457,6 @@ void usage(char const *argv0)
 	,argv0
 	,DEFAULT_INITIAL_CAPITAL
 	,DEFAULT_MIN_RETURN
-	,DEFAULT_TCOST_MODEL_NAME
 	,DEFAULT_TCOST
 	,argv0);
 	exit(1);
@@ -407,6 +472,9 @@ int run(MatrixXd const & R, MatrixXd const & C, VectorXd mean_returns,
 	 std::vector<double> *variances,
 	 std::vector<double> *returns)
 {
+	if (init_capital < 0) {
+		return -1;
+	}
 	int n;
 	int ncol;
 	ncol = C.cols(); /* number of columns, or stocks/variables in dataset */
@@ -438,17 +506,19 @@ int run(MatrixXd const & R, MatrixXd const & C, VectorXd mean_returns,
 		std::uniform_real_distribution<double> dist(0.0, 1.0);
 
 		for (int i = 0; i < nsim / n; i++) {
+			if (i % 50 == 0) {
+				tsprintf("Thread %d on trial %d of %d\n", omp_get_thread_num(), i, nsim / n);
+			}
 			/* make some random weights, ensure they sum up to one */
 			double sum = 0.0;
-			for (int i = 0; i < ncol; i++) {
+			for (int k = 0; k < ncol; k++) {
 				double tmp = dist(engine);
-				w[i] = tmp;
+				w[k] = tmp;
 				sum += tmp;
 			}
-			for (int i = 0; i < ncol; i++) {
-				w[i] /= sum;
+			for (int k = 0; k < ncol; k++) {
+				w[k] /= sum;
 			}
-			double test = w.sum();
 			double var = w.transpose() * C * w;
 			double mu  = w.transpose() * mean_returns;
 			if (((mu + 1) * init_capital) >= min_return) {
@@ -468,12 +538,12 @@ int run(MatrixXd const & R, MatrixXd const & C, VectorXd mean_returns,
 		returns->insert(returns->end(),     tl_returns.begin(), tl_returns.end());
 	}
 #pragma omp barrier
+	printf("Finished simulation with %d stocks\n", ncol);
 	auto found = std::min_element(variances->begin(), variances->end());
 	if (found == variances->end()) {
-		die("Infeasible problem :(\n");
+		return -1;
 	}
-	int i = found - variances->begin();
-	return i;
+	return found - variances->begin();
 }
 
 /*
@@ -501,6 +571,17 @@ void rmcol(MatrixXd & matrix, int rm)
 		matrix.block(0, rm, nrow, ncol - rm) = matrix.block(0, rm + 1, nrow, ncol - rm);
 	}
 	matrix.conservativeResize(nrow, ncol);
+}
+/*
+ * Remove an element from an Eigen vector
+ */
+void eigen_vector_erase(VectorXd *v, int i)
+{
+	int size = v->size();
+	if (i < size - 1) {
+		v->segment(i, size - i - 1) = v->segment(i + 1, size - i - 1);
+	}
+	v->conservativeResize(size - 1);
 }
 int main(int argc, char **argv)
 {
@@ -605,7 +686,9 @@ int main(int argc, char **argv)
 	std::vector<std::string> optimal_tickers;
 
 	auto data = read_stock_data(files, begin, end);
+	printf("data.size = %zu\n",data.size());
 	nrow = (*data.begin()).second.size();  /* the number of prices we have for each stock */
+	printf("nrow = %d\n", nrow);
 	R.resize(nrow / 5, data.size());       /* divide by five b/c weekly returns... one column per stock */
 	colIndex = 0;
 	for (auto & d : data) {
@@ -624,28 +707,42 @@ int main(int argc, char **argv)
 	optimal_nstocks = C.cols();
 
 	VectorXd mean_returns = R.colwise().mean();
+	/* FIXME: eliminate any variables with a negative mean-return */
 	std::vector<VectorXd> weights;
 	std::vector<double> variances;
 	std::vector<double> returns;
 	while (C.cols() > 2) {
-		int lowest_index = run(R, C, mean_returns, 1000,
-		    (initial_capital * (min_return + 1)), initial_capital - (C.cols() * 10.0),
-		    &weights, &variances, &returns);
-		rmcol(R, lowest_index);
-		mean_returns = R.colwise().mean();
-		if (variances.size()) {
-			auto newmin_var = std::min_element(variances.begin(),variances.end());
-			int i = newmin_var - variances.begin();
-			if (*newmin_var < min_var) {
-				optimal_nstocks = C.cols();
-				optimal_weights = weights[i];
-				min_var = *newmin_var;
-				optimal_tickers.assign(tickers.begin(), tickers.end());
-			}
+		int i = run(R, C, mean_returns, 1000,
+		           (initial_capital * (min_return + 1)), initial_capital - (C.cols() * tcost),
+			   &weights, &variances, &returns);
+		if (i == -1) {
+			/* problem was infeasible, and no data recorded.
+			 * remove stock with the lowest expected return and try again.
+			 */
+			i = std::min_element(mean_returns.data(),mean_returns.data() + mean_returns.size()) - mean_returns.data();
+			eigen_vector_erase(&mean_returns, i);
+			rmcol(R, i);
+			rmrow(C, i);
+			rmcol(C, i);
+			continue;
 		}
-		rmrow(C, lowest_index);
-		rmcol(C, lowest_index);
-		tickers.erase(tickers.begin() + lowest_index);
+		/* we found a feasible solution, record if it was better than previous, and remove
+		 * the variable with the lowest weight to see if that makes it better
+		 */
+		double newmin_var = variances[i];
+		if (newmin_var < min_var) {
+			optimal_nstocks = C.cols();
+			optimal_weights = weights[i];
+			min_var = variances[i];
+			optimal_tickers.assign(tickers.begin(), tickers.end());
+		}
+		/* removing variable */
+		i = std::min_element(optimal_weights.data(),optimal_weights.data()+optimal_weights.size()) - optimal_weights.data();
+		rmcol(R, i);
+		rmrow(C, i);
+		rmcol(C, i);
+		eigen_vector_erase(&mean_returns, i);
+		tickers.erase(tickers.begin() + i);
 
 		weights.clear();
 		variances.clear();

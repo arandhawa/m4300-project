@@ -1,6 +1,15 @@
 CXX=g++
-override CFLAGS += -g -ggdb -std=c++14
+CFLAGS = -g -ggdb -std=c++14
+debug ?= yes
+CFLAGS=-std=c++14
 EIGEN_ROOT=/usr/include/eigen3
+
+ifeq ($(debug),no)
+	CFLAGS += -O2 -march=native -mtune=native -fomit-frame-pointer
+else
+	CFLAGS += -DDEBUG
+endif
+
 .PHONY: all
 all: main getstock cov
 
