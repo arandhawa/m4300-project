@@ -437,7 +437,7 @@ void usage(char const *argv0)
 	"        -t 10.0 == transaction costs of 10 dollars per trade\n"
 	"\n"
 	"Returns (-r)\n"
-	"    Specify in decimal notation; 0.10 == 10 percent.
+	"    Specify in decimal notation; 0.10 == 10 percent.\n"
 	"\n"
 	"Default values\n"
 	"    If the command options are not specified, the following defaults will be assumed:\n"
