@@ -506,9 +506,9 @@ int run(MatrixXd const & R, MatrixXd const & C, VectorXd mean_returns,
 		std::uniform_real_distribution<double> dist(0.0, 1.0);
 
 		for (int i = 0; i < nsim / n; i++) {
-			if (i % 50 == 0) {
-				tsprintf("Thread %d on trial %d of %d\n", omp_get_thread_num(), i, nsim / n);
-			}
+			// if (i % 50 == 0) {
+			// 	tsprintf("Thread %d on trial %d of %d\n", omp_get_thread_num(), i, nsim / n);
+			// }
 			/* make some random weights, ensure they sum up to one */
 			double sum = 0.0;
 			for (int k = 0; k < ncol; k++) {
@@ -538,7 +538,7 @@ int run(MatrixXd const & R, MatrixXd const & C, VectorXd mean_returns,
 		returns->insert(returns->end(),     tl_returns.begin(), tl_returns.end());
 	}
 #pragma omp barrier
-	printf("Finished simulation with %d stocks\n", ncol);
+	// printf("Finished simulation with %d stocks\n", ncol);
 	auto found = std::min_element(variances->begin(), variances->end());
 	if (found == variances->end()) {
 		return -1;
@@ -686,9 +686,9 @@ int main(int argc, char **argv)
 	std::vector<std::string> optimal_tickers;
 
 	auto data = read_stock_data(files, begin, end);
-	printf("data.size = %zu\n",data.size());
+	// printf("data.size = %zu\n",data.size());
 	nrow = (*data.begin()).second.size();  /* the number of prices we have for each stock */
-	printf("nrow = %d\n", nrow);
+	// printf("nrow = %d\n", nrow);
 	R.resize(nrow / 5, data.size());       /* divide by five b/c weekly returns... one column per stock */
 	colIndex = 0;
 	for (auto & d : data) {
@@ -703,6 +703,7 @@ int main(int argc, char **argv)
 
 	int optimal_nstocks;
 	VectorXd optimal_weights;
+	VectorXd exp_returns;
 	double min_var = 10000000.0;
 	optimal_nstocks = C.cols();
 
@@ -712,7 +713,7 @@ int main(int argc, char **argv)
 	std::vector<double> variances;
 	std::vector<double> returns;
 	while (C.cols() > 2) {
-		int i = run(R, C, mean_returns, 1000,
+		int i = run(R, C, mean_returns, 3000,
 		           (initial_capital * (min_return + 1)), initial_capital - (C.cols() * tcost),
 			   &weights, &variances, &returns);
 		if (i == -1) {
@@ -733,6 +734,7 @@ int main(int argc, char **argv)
 		if (newmin_var < min_var) {
 			optimal_nstocks = C.cols();
 			optimal_weights = weights[i];
+			exp_returns = mean_returns;
 			min_var = variances[i];
 			optimal_tickers.assign(tickers.begin(), tickers.end());
 		}
@@ -754,6 +756,8 @@ int main(int argc, char **argv)
 		printf("%s %10.6f\n", optimal_tickers[i].c_str(), optimal_weights[i]);
 		test += optimal_weights[i];
 	}
+	printf("Expected return: %.6f\n", (exp_returns.array() * optimal_weights.array()).sum());
+	printf("Min variance:    %.6f\n", min_var);
 	printf("net weight: %.4f\n", test);
 	return 0;
 }
