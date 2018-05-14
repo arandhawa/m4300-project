@@ -4,6 +4,9 @@
  * Project URL    : <url>
  * Synopsis       : Reading stock data from Quandl
  */
+#ifndef _GNU_SOURCE
+  #define _GNU_SOURCE
+#endif
 #include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
