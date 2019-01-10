@@ -1,3 +1,14 @@
+/*
+ * Portfolio Optimization Project
+ * Authors:
+ *   Gabriel Etrata
+ *   Liming Kang
+ *   Tom Maltese
+ *   Pav Singh
+ *   Zeqi Wang
+ * URL: https://github.com/tommalt/m4300-project
+ * Synopsis: Solving for an optimal portfolio
+ */
 #ifndef _GNU_SOURCE
   #define _GNU_SOURCE
 #endif
@@ -27,6 +38,17 @@ using namespace Eigen;
 #define DATE_KEY "Date"
 #define DATA_SEP ','
 
+#define ADVANCE(ptr, count) \
+do { \
+	for (int counter__=0; counter__ < count; counter__++) { \
+		ptr = strchr(ptr, DATA_SEP); \
+		if (!ptr) { \
+			break; \
+		} \
+		ptr++; \
+	} \
+} while (0);
+
 /* Default values when user input is omitted.
  */
 #define DEFAULT_INITIAL_CAPITAL 100000.0
@@ -39,20 +61,24 @@ using namespace Eigen;
 #define MAX(x, y) ((x) > (y)) ? (x) : (y)
 #define MIN(x, y) ((x) < (y)) ? (x) : (y)
 
-static std::string upper(char const *s);
-static std::string ticker_from_filename(char const *filename);
-static std::map<std::string, std::vector<double> > read_stock_data(std::vector<std::string> const & filepaths,
-                                                                   time_t start, time_t end);
-static time_t strtotime(char const *s);  /* convert date time string to an integral representation (time_t) */
-static void timetostr(time_t t, char *s);
-static time_t read_until(FILE *file, time_t begin, int date_index);
-/*^read from data source until we hit a certain point in time (begin) */
-static int indexOf(char const *line, char const *field);
-static VectorXd weeklyReturns(std::vector<double> const & prices);
-static MatrixXd cov(MatrixXd const & m);
-static void die(char const *fmt, ...);   /* print a message and kill the program */
-static void warn(char const *fmt, ...);  /* print a message */
-static void usage(char const * argv0);
+void die(char const *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	vfprintf(stdout, fmt, args);
+	va_end(args);
+	exit(1);
+}
+
+void warn(char const *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	vfprintf(stdout, fmt, args);
+	va_end(args);
+}
 
 template <typename Iter, typename Container>
 typename Container::iterator index_remove(Iter ixbegin, Iter ixend, Container & C)
@@ -63,9 +89,6 @@ typename Container::iterator index_remove(Iter ixbegin, Iter ixend, Container & 
 	});
 }
 
-/*
- * upper case a string
- */
 std::string upper(char const *s)
 {
 	int size = (int) strlen(s);
@@ -76,6 +99,7 @@ std::string upper(char const *s)
 	}
 	return ret;
 }
+
 /*
  * Given a filename of the form
  * TICKER.begin.end.csv
@@ -91,6 +115,120 @@ std::string ticker_from_filename(char const *filename)
 	*pd = '\0';
 	return upper(buf);
 }
+
+/*
+ * Find the index of a field in a comma-sperated line of text
+ * ex)
+ *      line = "Date,Open,High,Low,Close"
+ *      indexOf(line, "Low") = 3
+ */
+int indexOf(char const *line, char const *field)
+{
+	int index;
+	char const *begin, *end, *lineEnd;
+
+	begin = line;
+	end = strchr(begin, DATA_SEP);
+	if (end == NULL) {
+		if (strcmp(begin, field) == 0)
+			return 0;
+		return -1;
+		die("Field (%s) not found in string: %s\n", field, line);
+	}
+	lineEnd = begin + strlen(begin);
+	index = 0;
+	while (begin < lineEnd) {
+		int size = end - begin;
+		if (strncasecmp(begin, field, size) == 0) {
+			break;
+		}
+		begin = end + 1;
+		end = strchrnul(begin, DATA_SEP);
+		index++;
+	}
+	int nsep = 0;
+	for (char const *tmp = line; *tmp != '\0'; tmp++) {
+		if (*tmp == DATA_SEP)
+			nsep++;
+	}
+	if (index > nsep) {
+		return -1;
+		die("Field not found in data: %s\n", field);
+	}
+	return index;
+}
+
+/*
+ * Given a string of the form
+ * YYYY-mm-dd
+ * parse it and save it as an integral type (time_t)
+ */
+time_t strtotime(char const *s)
+{
+	struct tm tm;
+	memset(&tm, 0, sizeof tm);
+	if (!strptime(s, DATE_FMT, &tm))
+		return 0;
+	return mktime(&tm);
+}
+
+void timetostr(time_t t, char *s)
+{
+	struct tm *tm;
+	tm = gmtime(&t);
+	strftime(s,64,"%Y-%m-%d",tm);
+}
+
+/*
+ * read_until
+ *   file:  FILE stream
+ *   begin: the date we want to synchronize with
+ * returns:
+ *   the earliest time observation that is >= begin, in Unix time.
+ *   OR returns 0 (1970-01-01 00:00:00) if there is no date >= begin
+ */
+time_t read_until(FILE *file, time_t begin, int date_index)
+{
+	char buf[256];
+	char *date;
+	int nread;
+	struct tm tm;
+	time_t tmp;
+
+	char bg[64];
+	char ed[64];
+
+	timetostr(begin, bg);
+
+	/* iterate over dates in file until date >= begin */
+	while (fgets(buf, sizeof buf, file)) {
+		nread = strlen(buf);   /* remember how much to rewind by */
+		date = buf;
+		ADVANCE(date, date_index);
+		if (!date) {
+			return 0;
+			die("Date field not found in data\n");
+		}
+		memset(&tm, 0, sizeof tm);
+		if (!strptime(date, DATE_FMT, &tm)) {
+			return 0;
+			die("Failed to parse date in file\n");
+		}
+		tmp = mktime(&tm);
+		timetostr(tmp,ed);
+		if (tmp >= begin) {
+			/* the time for this line in the file is >= the specified start
+			 * date, rewind so the caller can re-read this line in the future
+			 */
+			fseek(file, SEEK_CUR, -nread);
+			return tmp;
+		}
+	}
+	/* we reached EOF without finding a date >= begin
+	 * let caller know by returning 0 */
+	return 0;
+}
+
 /*
  * read_stock_data
  *   return a map of ticker -> prices
@@ -149,18 +287,12 @@ read_stock_data(std::vector<std::string> & filepaths, time_t start, time_t end)
                 while (fgets(buf, sizeof buf, file)) {
 			/* check if date is past the end */
 			p = buf;
-			for (int i = 0; i < date_index; i++) {
-				p = strchr(p, DATA_SEP);
-				p++;
-			}
+			ADVANCE(p, date_index);
 			if (strtotime(p) > end)
 				break;
 			/* OK, read the price data */
 			p = buf;
-			for (int i = 0; i < close_index; i++) {
-				p = strchr(p, DATA_SEP);
-				p++;
-			}
+			ADVANCE(p, close_index);
 			char *endptr;
 			double price = strtod(p, &endptr);
 			if (price == 0.0 && endptr == p) { /* a parse error ocurred */
@@ -182,6 +314,7 @@ read_stock_data(std::vector<std::string> & filepaths, time_t start, time_t end)
 	for (auto const & pair : data) {
 		max_observations = MAX(max_observations, pair.second.size());
 	}
+	// FIXME(tom): more robust matching on dates
 	max_observations = max_observations - 2; /* add some slack */
 	for (auto it = data.begin(); it != data.end(); ) {
 		if (it->second.size() < max_observations) {
@@ -194,120 +327,8 @@ read_stock_data(std::vector<std::string> & filepaths, time_t start, time_t end)
 	}
 	return data;
 }
-/*
- * Given a string of the form
- * YYYY-mm-dd
- * parse it and save it as an integral type (time_t)
- * FYI: time_t is usually defined as an unsigned integer
- *      it represents the number of seconds elapsed since the Unix epoch (1970-01-01)
- */
-time_t strtotime(char const *s)
-{
-	struct tm tm;
-	memset(&tm, 0, sizeof tm);
-	if (!strptime(s, DATE_FMT, &tm))
-		return 0;
-	return mktime(&tm);
-}
-void timetostr(time_t t, char *s)
-{
-	struct tm *tm;
-	tm = gmtime(&t);
-	strftime(s,64,"%Y-%m-%d",tm);
-}
-/*
- * read_until
- *   @file  := FILE stream
- *   @begin := the date we want to synchronize with
- * returns:
- *   the earliest time observation that is >= begin, in Unix time.
- *   or 0 (1970-01-01 00:00:00) if there is no date >= begin
- */
-time_t read_until(FILE *file, time_t begin, int date_index)
-{
-	char buf[256];
-	char *date;
-	int nread;
-	struct tm tm;
-	time_t tmp;
 
-	char bg[64];
-	char ed[64];
-	
-	timetostr(begin, bg);
 
-	/* iterate over dates in file until date >= begin */
-	while (fgets(buf, sizeof buf, file)) {
-		nread = strlen(buf);   /* remember how much to rewind by */
-		date = buf;
-		for (int i = 0; i < date_index; i++) {
-			date = strchr(date, DATA_SEP);
-			if (!date) {
-				return 0;
-				die("Date field not found in data\n");
-			}
-			date++;
-		}
-		memset(&tm, 0, sizeof tm);
-		if (!strptime(date, DATE_FMT, &tm)) {
-			return 0;
-			die("Failed to parse date in file\n");
-		}
-		tmp = mktime(&tm);
-		timetostr(tmp,ed);
-		if (tmp >= begin) {
-			/* the time for this line in the file is >= the specified start
-			 * date, rewind so the caller can re-read this line in the future
-			 */
-			fseek(file, SEEK_CUR, -nread);
-			return tmp;
-		}
-	}
-	/* we reached EOF without finding a date >= begin
-	 * let caller know by returning 0 */
-	return 0;
-}
-/*
- * Find the index of a field in a comma-sperated line of text
- * ex)
- *      line = "Date,Open,High,Low,Close"
- *      indexOf(line, "Low") = 3
- */
-int indexOf(char const *line, char const *field)
-{
-	int index;
-	char const *begin, *end, *lineEnd;
-
-	begin = line;
-	end = strchr(begin, DATA_SEP);
-	if (end == NULL) {
-		if (strcmp(begin, field) == 0)
-			return 0;
-		return -1;
-		die("Field (%s) not found in string: %s\n", field, line);
-	}
-	lineEnd = begin + strlen(begin);
-	index = 0;
-	while (begin < lineEnd) {
-		int size = end - begin;
-		if (strncasecmp(begin, field, size) == 0) {
-			break;
-		}
-		begin = end + 1;
-		end = strchrnul(begin, DATA_SEP);
-		index++;
-	}
-	int nsep = 0;
-	for (char const *tmp = line; *tmp != '\0'; tmp++) {
-		if (*tmp == DATA_SEP)
-			nsep++;
-	}
-	if (index > nsep) {
-		return -1;
-		die("Field not found in data: %s\n", field);
-	}
-	return index;
-}
 /*
  * Given a vector of prices for a given security
  * return the vector containing the weekly returns for that security
@@ -331,6 +352,7 @@ VectorXd weeklyReturns(std::vector<double> const & prices)
 	}
 	return returns;
 }
+
 MatrixXd cov(MatrixXd const & m)
 {
 	/* please see https://stats.stackexchange.com/a/100948
@@ -367,6 +389,7 @@ MatrixXd cov(MatrixXd const & m)
 				   (double (nrow - 1));
 		}
 	}
+
 	/* the covariance matrix is symetrical. Above, we have only computed
 	 * the upper right half of it.
 	 * We just copy the data to the lower left half.
@@ -378,21 +401,9 @@ MatrixXd cov(MatrixXd const & m)
 	}
 	return C;
 }
-/*
- * print a message and kill the program
- */
-void die(char const *fmt, ...)
-{
-	va_list args;
 
-	va_start(args, fmt);
-	vfprintf(stdout, fmt, args);
-	va_end(args);
-	exit(1);
-}
-/*
- * thread safe printf
- */
+
+/* thread safe printf and cout */
 void tsprintf(char const *fmt, ...)
 {
 	static std::mutex m;
@@ -402,9 +413,7 @@ void tsprintf(char const *fmt, ...)
 	vfprintf(stdout, fmt, args);
 	va_end(args);
 }
-/*
- * thread safe cout
- */
+
 template <typename T>
 std::ostream & tscout(T const & t)
 {
@@ -413,40 +422,20 @@ std::ostream & tscout(T const & t)
 	std::cout << t << '\n';
 	return std::cout;
 }
-/*
- * print a message
- */
-void warn(char const *fmt, ...)
-{
-	va_list args;
 
-	va_start(args, fmt);
-	vfprintf(stdout, fmt, args);
-	va_end(args);
-}
 void usage(char const *argv0)
 {
 	printf(
-	"Usage: %s [-h|--help] [-c $$$] [-t $$$]\n"
-	"          [-r return]\n"
+	"Usage: %s [-h|--help] [-c <float>] [-t <float>] [-r <float>]\n"
 	"    -h,--help           show this help message\n"
-	"    -c $$$              initial capital\n"
-	"    -t $$$              transaction cost model. see below\n"
-	"    -r return           Minimum portfolio mean return, in percentage form (decimal)\n"
-	"See below for info on default values and input data\n"
-	"\n"
-	"Transaction Costs (-t)\n"
-	"    ex)\n"
-	"        -t 10.0 == transaction costs of 10 dollars per trade\n"
-	"\n"
-	"Returns (-r)\n"
-	"    Specify in decimal notation; 0.10 == 10 percent.\n"
+	"    -c float            initial capital\n"
+	"    -t float            transaction cost per trade\n"
+	"    -r float            Minimum portfolio mean return, in percentage form (decimal)\n"
 	"\n"
 	"Default values\n"
-	"    If the command options are not specified, the following defaults will be assumed:\n"
-	"        Initial capital = %.1f\n"
-	"        Mean return = %.2f\n"
-	"        Transaction costs = %.2f per trade (i.e. per stock)\n"
+	"    -c %.1f\n"
+	"    -t %.2f\n"
+	"    -r %.2f\n"
 	"\n"
 	"Input Data\n"
 	"    From its standard input, the program reads:\n"
@@ -456,7 +445,8 @@ void usage(char const *argv0)
 	"    The files must be in CSV format, with column labels\n"
 	"\n"
 	"Example usage (using the getstock program to get the data)\n"
-	"    $ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -o data -- JPM BAC GS | %s -c 100000 -t 10.0 -m meanvar -r 0.07\n"
+	"    $ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -o data -- JPM BAC GS | %s -c 100000 -t 10.0 -r 0.07\n"
+	"\n"
 	,argv0
 	,DEFAULT_INITIAL_CAPITAL
 	,DEFAULT_MIN_RETURN
@@ -549,9 +539,7 @@ int run(MatrixXd const & R, MatrixXd const & C, VectorXd mean_returns,
 	return found - variances->begin();
 }
 
-/*
- * remove a row (index == rm) from a matrix
- */
+/* remove the row at index rm from the matrix */
 void rmrow(MatrixXd & matrix, int rm)
 {
 	int nrow = matrix.rows() - 1;
@@ -562,9 +550,7 @@ void rmrow(MatrixXd & matrix, int rm)
 	}
 	matrix.conservativeResize(nrow, ncol);
 }
-/*
- * remove a column (index == rm) from a matrix
- */
+
 void rmcol(MatrixXd & matrix, int rm)
 {
 	int nrow = matrix.rows();
@@ -575,9 +561,8 @@ void rmcol(MatrixXd & matrix, int rm)
 	}
 	matrix.conservativeResize(nrow, ncol);
 }
-/*
- * Remove an element from an Eigen vector
- */
+
+/* Remove element at index i */
 void eigen_vector_erase(VectorXd *v, int i)
 {
 	int size = v->size();
@@ -586,6 +571,7 @@ void eigen_vector_erase(VectorXd *v, int i)
 	}
 	v->conservativeResize(size - 1);
 }
+
 int main(int argc, char **argv)
 {
 	double initial_capital;

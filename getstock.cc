@@ -1,8 +1,13 @@
 /*
  * Portfolio Optimization Project
- * Author(s)      : Tom Maltese (...)
- * Project URL    : <url>
- * Synopsis       : Reading stock data from Quandl
+ * Authors:
+ *   Gabriel Etrata
+ *   Liming Kang
+ *   Tom Maltese
+ *   Pav Singh
+ *   Zeqi Wang
+ * URL: https://github.com/tommalt/m4300-project
+ * Synopsis: Reading stock data from Quandl
  */
 #ifndef _GNU_SOURCE
   #define _GNU_SOURCE
@@ -30,31 +35,6 @@
 /* date format used for file naming */
 #define DATE_FMT "%Y-%m-%d"
 
-static int database_init(char const *path);          /* initializes the database if it does not exist */
-static std::string slurp(std::string filename);       /* read entire file into a string */
-static void strip(char *s);
-static void lstrip(char *s);
-static void rstrip(char *s);
-static void strip(std::string *s);                    /* remove whitespace, newlines from '*s' */
-static void lstrip(std::string *s);
-static void rstrip(std::string *s);
-static std::string upper(char const * s);
-static std::string make_url(std::string const & ticker,
-                            std::string const & token,
-                            char const *begin,
-                            char const *end);
-static std::string make_filename(std::string const & dbroot, std::string const & ticker,
-                                 char const *begin, char const *end);
-std::vector<std::string> get_db_files(std::string const & dbroot);
-std::vector<std::string>::iterator
-find_file_by_ticker(std::string const & ticker,
-                    std::vector<std::string> const & files);
-static int has_data(std::string const & filename,
-                   char const *begin, char const *end);
-static size_t curl_callback_fwrite(void *buf, size_t size, size_t nmemb, void *file); /* CURL callback writer */
-static void die(char const *fmt, ...);               /* print a message and kill the program */
-static void usage(char const * argv0);
-
 static const std::string urlbase = "https://www.quandl.com/api/v3/datasets/WIKI/";
 
 int database_init(char const *path)
@@ -73,6 +53,7 @@ int database_init(char const *path)
 	}
 	return status;
 }
+
 std::string slurp(std::string filename)
 {
 	std::ifstream file{filename};
@@ -83,11 +64,7 @@ std::string slurp(std::string filename)
 	ss << file.rdbuf();
 	return ss.str();
 }
-void strip(std::string *s)
-{
-	lstrip(s);
-	rstrip(s);
-}
+
 void lstrip(std::string *s) /* left-hand side strip */
 {
 	auto begin = std::find_if(s->begin(), s->end(), [](char c) { return !isspace(c); });
@@ -96,20 +73,24 @@ void lstrip(std::string *s) /* left-hand side strip */
 		s->erase(newend, s->end());
 	}
 }
+
 void rstrip(std::string *s) /* right-hand side strip */
 {
 	auto end = std::find_if(s->rbegin(), s->rend(), [](char c) { return !isspace(c); }).base();
 	s->erase(end, s->end());
 }
+
 /* for more info on iterators .begin(), and reverse iterators .rbegin() see:
  * https://www.cs.northwestern.edu/~riesbeck/programming/c++/stl-iterators.html
  * http://en.cppreference.com/w/cpp/iterator/reverse_iterator
  */
-void strip(char *s)
+
+void strip(std::string *s)
 {
 	lstrip(s);
 	rstrip(s);
 }
+
 void lstrip(char *s)
 {
 	char *begin;
@@ -121,6 +102,7 @@ void lstrip(char *s)
 		*s = '\0';
 	}
 }
+
 void rstrip(char *s)
 {
 	char *end;
@@ -129,6 +111,14 @@ void rstrip(char *s)
 	end++;
 	*end = '\0';
 }
+
+void strip(char *s)
+{
+	lstrip(s);
+	rstrip(s);
+}
+
+
 std::string upper(char const *s)
 {
 	int size = (int) strlen(s);
@@ -139,6 +129,7 @@ std::string upper(char const *s)
 	}
 	return ret;
 }
+
 /*
  * make_url("TICKER","api_token", "begin", "end")
  * will form a proper URL for communicating with the Quandl API
@@ -160,6 +151,7 @@ std::string make_url(std::string const & ticker,
 	}
 	return url;
 }
+
 /*
  * make_filename("/path/to/dir","TICKER","begin","end") = "/path/to/dir/TICKER.begin.end.csv"
  * where:
@@ -170,7 +162,9 @@ std::string make_filename(std::string const & dbroot, std::string const & ticker
 {
 	std::stringstream fname;
 	fname << dbroot;
-	if (dbroot.back() != '/') fname << '/';
+	if (dbroot.back() != '/') {
+		fname << '/';
+	}
 	fname << ticker;
 	if (begin && end) {
 		fname << '.' << begin << '.' << end;
@@ -178,6 +172,8 @@ std::string make_filename(std::string const & dbroot, std::string const & ticker
 	fname << ".csv";
 	return fname.str();
 }
+
+/* get paths to all files in database */
 std::vector<std::string> get_db_files(std::string const & dbroot)
 {
 	char command[512];
@@ -194,6 +190,7 @@ std::vector<std::string> get_db_files(std::string const & dbroot)
 	pclose(ls);
 	return files;
 }
+
 std::vector<std::string>::iterator
 find_file_by_ticker(std::string const & ticker,
                     std::vector<std::string> & files)
@@ -209,6 +206,8 @@ find_file_by_ticker(std::string const & ticker,
 	}
 	return it;
 }
+
+/* check if _filename includes the dates specified */
 int has_data(std::string const & _filename, char const *a_begin, char const *a_end)
 {
 	struct stat buf;
@@ -261,6 +260,7 @@ int has_data(std::string const & _filename, char const *a_begin, char const *a_e
 		return 1;
 	return 0;
 }
+
 /*
  * Curl Callback to write directly to a file.
  */
@@ -269,6 +269,7 @@ size_t curl_callback_fwrite(void *buf, size_t size, size_t nmemb, void *file)
 	fwrite(buf, size, nmemb, (FILE *)file);
 	return size * nmemb;
 }
+
 void die(char const *fmt, ...)
 {
 	va_list args;
@@ -278,6 +279,7 @@ void die(char const *fmt, ...)
 	va_end(args);
 	exit(1);
 }
+
 void usage(char const *argv0)
 {
 	printf(
@@ -295,6 +297,7 @@ void usage(char const *argv0)
 	,argv0);
 	exit(1);
 }
+
 int main(int argc, char **argv)
 {
 	char const *argv0 = argv[0];
@@ -308,7 +311,7 @@ int main(int argc, char **argv)
 	std::string api_key;
 	std::string begin;         /* beginning and ending dates */
 	std::string end;
-	std::string dbroot;        /* root directory of the database passed by the user via [-o] option */
+	std::string dbroot;        /* root directory of the database (passed by the user via [-o] option) */
 	std::vector<std::string> dbfiles;     /* all .csv files found in dbroot */
 	int ac;
 	char **av;
@@ -352,20 +355,33 @@ int main(int argc, char **argv)
 			}
 		}
 	}
-	if (!ac)                  die("Must specify at least one stock symbol\n");
-	if (begin.empty() || end.empty()) die("Must specify begin and end dates\n");
-	if (api_key_file.empty()) die("API Key file missing\n");
+	if (!ac) {
+		die("Must specify at least one stock symbol\n");
+	}
+	if (begin.empty() || end.empty()) {
+		die("Must specify begin and end dates\n");
+	}
+	if (api_key_file.empty()) {
+		die("API Key file missing\n");
+	}
 
 	api_key = slurp(api_key_file);
 	strip(&api_key);
-	if (api_key.empty())      die("Failed to read api key from file: %s\n", api_key_file.c_str());
 
-	if (dbroot.empty())       die("Database root is required\n");
+	if (api_key.empty()) {
+		die("Failed to read api key from file: %s\n", api_key_file.c_str());
+	}
+	if (dbroot.empty()) {
+		die("Database root is required\n");
+	}
 
 	/* remove any trailing '/' characters from the path */
-	if (dbroot.size() > 1)
-		while (dbroot.size() > 1 && dbroot.back() == '/')
+	if (dbroot.size() > 1) {
+		while (dbroot.size() > 1 && dbroot.back() == '/') {
 			dbroot.pop_back();
+		}
+	}
+
 	int status = database_init(dbroot.c_str());
 	if (status == -1) {
 		perror("database_init:");
@@ -405,6 +421,7 @@ int main(int argc, char **argv)
 	}
 	curl_easy_cleanup(curl);
 }
+
 /*
  * gdb
  * set follow-fork-mode parent
