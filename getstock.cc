@@ -283,8 +283,7 @@ void die(char const *fmt, ...)
 void usage(char const *argv0)
 {
 	printf(
-	"Usage: %s [-h|--help] [-k FILE] [-b DATE]\n"
-	"          [-e DATE] [-o DIR] -- [TICKER...]\n"
+	"Usage: %s [-h|--help] [-k FILE] [-b DATE] [-e DATE] [-o DIR] -- [TICKER...]\n"
 	"    -h,--help             show this help message\n"
 	"    -k                    file containing a Quandl api key (required)\n"
 	"    -b                    Beginning date, YYYY-mm-dd\n"
