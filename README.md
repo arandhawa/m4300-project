@@ -49,7 +49,7 @@ Usage: ./main [-h|--help] [-c <float>] [-t <float>] [-r <float>]
 Default values
     -c 100000.0
     -t 0.00
-    -r 10.00
+    -r 0.002
 
 Input Data
     From its standard input, the program reads:
@@ -59,7 +59,7 @@ Input Data
     The files must be in CSV format, with column labels
 
 Example usage (using the getstock program to get the data)
-    $ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -o data -- JPM BAC GS | ./main -c 100000 -t 10.0 -r 0.07
+    $ ./getstock -k apikey -b 2018-01-01 -e 2018-04-01 -o data -- JPM BAC GS | ./main -c 100000 -t 10.0 -r 0.02
 
 ```
 

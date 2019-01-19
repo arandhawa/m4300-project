@@ -20,7 +20,7 @@
 #include <string.h>
 #include <strings.h>    /* strncasecmp */
 
-#include <algorithm>    /* std::rotate, std::find_if */
+#include <algorithm>    /* rotate, find_if */
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -32,10 +32,12 @@
 
 #include <curl/curl.h>
 
+using namespace std;
+
 /* date format used for file naming */
 #define DATE_FMT "%Y-%m-%d"
 
-static const std::string urlbase = "https://www.quandl.com/api/v3/datasets/WIKI/";
+static const string urlbase = "https://www.quandl.com/api/v3/datasets/WIKI/";
 
 int database_init(char const *path)
 {
@@ -54,29 +56,29 @@ int database_init(char const *path)
 	return status;
 }
 
-std::string slurp(std::string filename)
+string slurp(string filename)
 {
-	std::ifstream file{filename};
+	ifstream file{filename};
 	if (!file.is_open()) {
 		return {};
 	}
-	std::stringstream ss;
+	stringstream ss;
 	ss << file.rdbuf();
 	return ss.str();
 }
 
-void lstrip(std::string *s) /* left-hand side strip */
+void lstrip(string *s) /* left-hand side strip */
 {
-	auto begin = std::find_if(s->begin(), s->end(), [](char c) { return !isspace(c); });
+	auto begin = find_if(s->begin(), s->end(), [](char c) { return !isspace(c); });
 	if (begin != s->end()) {
-		auto newend = std::rotate(s->begin(), begin, s->end());
+		auto newend = rotate(s->begin(), begin, s->end());
 		s->erase(newend, s->end());
 	}
 }
 
-void rstrip(std::string *s) /* right-hand side strip */
+void rstrip(string *s) /* right-hand side strip */
 {
-	auto end = std::find_if(s->rbegin(), s->rend(), [](char c) { return !isspace(c); }).base();
+	auto end = find_if(s->rbegin(), s->rend(), [](char c) { return !isspace(c); }).base();
 	s->erase(end, s->end());
 }
 
@@ -85,7 +87,7 @@ void rstrip(std::string *s) /* right-hand side strip */
  * http://en.cppreference.com/w/cpp/iterator/reverse_iterator
  */
 
-void strip(std::string *s)
+void strip(string *s)
 {
 	lstrip(s);
 	rstrip(s);
@@ -119,10 +121,10 @@ void strip(char *s)
 }
 
 
-std::string upper(char const *s)
+string upper(char const *s)
 {
 	int size = (int) strlen(s);
-	std::string ret;
+	string ret;
 	ret.resize(size);
 	for (int i = 0; i < size; i++) {
 		ret[i] = toupper(s[i]);
@@ -135,8 +137,8 @@ std::string upper(char const *s)
  * will form a proper URL for communicating with the Quandl API
  * begin and end dates are optional (use NULL or nullptr to omit)
  */
-std::string make_url(std::string const & ticker,
-                     std::string const & token,
+string make_url(string const & ticker,
+                     string const & token,
                      char const *begin,
                      char const *end)
 {
@@ -157,10 +159,10 @@ std::string make_url(std::string const & ticker,
  * where:
  *   begin, end are of the form YYYY-mm-dd
  */
-std::string make_filename(std::string const & dbroot, std::string const & ticker,
+string make_filename(string const & dbroot, string const & ticker,
                           char const *begin, char const *end)
 {
-	std::stringstream fname;
+	stringstream fname;
 	fname << dbroot;
 	if (dbroot.back() != '/') {
 		fname << '/';
@@ -174,12 +176,12 @@ std::string make_filename(std::string const & dbroot, std::string const & ticker
 }
 
 /* get paths to all files in database */
-std::vector<std::string> get_db_files(std::string const & dbroot)
+vector<string> get_db_files(string const & dbroot)
 {
 	char command[512];
 	char buf[512];
 	FILE *ls;
-	std::vector<std::string> files;
+	vector<string> files;
 
 	sprintf(command, "ls %s/*.csv 2>/dev/null", dbroot.c_str());
 	ls = popen(command, "r");
@@ -191,9 +193,9 @@ std::vector<std::string> get_db_files(std::string const & dbroot)
 	return files;
 }
 
-std::vector<std::string>::iterator
-find_file_by_ticker(std::string const & ticker,
-                    std::vector<std::string> & files)
+vector<string>::iterator
+find_file_by_ticker(string const & ticker,
+                    vector<string> & files)
 
 {
 	char const *t = ticker.c_str();
@@ -208,7 +210,7 @@ find_file_by_ticker(std::string const & ticker,
 }
 
 /* check if _filename includes the dates specified */
-int has_data(std::string const & _filename, char const *a_begin, char const *a_end)
+int has_data(string const & _filename, char const *a_begin, char const *a_end)
 {
 	struct stat buf;
 	char const *filename;
@@ -306,15 +308,15 @@ int main(int argc, char **argv)
 		usage(argv0);
 	}
 	CURL *curl;                /* libcurl state */
-	std::string api_key_file;
-	std::string api_key;
-	std::string begin;         /* beginning and ending dates */
-	std::string end;
-	std::string dbroot;        /* root directory of the database (passed by the user via [-o] option) */
-	std::vector<std::string> dbfiles;     /* all .csv files found in dbroot */
+	string api_key_file;
+	string api_key;
+	string begin;         /* beginning and ending dates */
+	string end;
+	string dbroot;        /* root directory of the database (passed by the user via [-o] option) */
+	vector<string> dbfiles;     /* all .csv files found in dbroot */
 	int ac;
 	char **av;
-	std::string buffer;        /* memory buffer containing the stock data */
+	string buffer;        /* memory buffer containing the stock data */
 
 	/* parsing command line options */
 	for (ac = argc - 1, av = argv + 1;
@@ -393,7 +395,7 @@ int main(int argc, char **argv)
 	for ( ; ac && *av; ac--, av++) {
 		auto ticker = upper(*av);
 		auto found = find_file_by_ticker(ticker, dbfiles);
-		std::string filename;
+		string filename;
 		FILE *file;
 		if (found != dbfiles.end()) {
 			filename = *found;
